@@ -1,0 +1,8 @@
+# Datos personales — nunca van al repo
+data.db
+data.db-journal
+
+# Sistema
+.DS_Store
+__pycache__/
+*.pyc
