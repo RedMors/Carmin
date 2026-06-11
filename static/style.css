@@ -589,18 +589,30 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 .check-row input { width: 17px; height: 17px; accent-color: var(--accent); }
 
 .popover {
-  position: fixed; z-index: 80; min-width: 180px;
+  position: fixed; z-index: 80; min-width: 200px; max-width: 320px;
   background: var(--bg2); border: 1px solid var(--border);
   border-radius: var(--radius-md); box-shadow: var(--shadow-lg);
   padding: 6px; animation: pop var(--dur-fast) var(--ease);
 }
+.pop-section {
+  font-size: 11px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--faint); padding: 8px 10px 4px;
+}
 .pop-item {
-  display: flex; align-items: center; gap: 10px; width: 100%;
+  display: flex; align-items: flex-start; gap: 10px; width: 100%;
   padding: 9px 10px; border-radius: var(--radius-sm); text-align: left; font-weight: 500;
-  min-height: 38px;
+  min-height: 38px; color: var(--text);
 }
 .pop-item:hover { background: var(--surface2); }
+.pop-icon {
+  flex: none; width: 28px; height: 28px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.pop-title { font-weight: 700; font-size: 13.5px; }
+.pop-sub { color: var(--muted); font-size: 12px; margin-top: 1px; line-height: 1.35; }
 .pop-scrim { position: fixed; inset: 0; z-index: 75; }
+
+.create-btn .caret { display: inline-flex; margin-left: 4px; opacity: .75; transform: rotate(90deg); }
 
 /* ---------------------------------------------------------- extras */
 .empty {

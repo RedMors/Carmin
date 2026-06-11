@@ -171,7 +171,7 @@ function renderSidebar() {
   const name = S.settings.user_name || 'Yo';
   let html = `
     <div class="logo"><span class="dot"></span> Carmín</div>
-    <button class="create-btn" onclick="newTaskModal()">${I.plus} Crear tarea</button>
+    <button class="create-btn" onclick="createMenu(event)">${I.plus} Crear <span class="caret">${I.chevron}</span></button>
     <button class="nav-item ${route.type === 'inicio' ? 'active' : ''}" onclick="nav('inicio')">${I.home} Inicio</button>
     <button class="nav-item ${route.type === 'all' ? 'active' : ''}" onclick="nav('all')">${I.all} Todas las tareas</button>
     <button class="nav-item ${route.type === 'md' ? 'active' : ''}" onclick="nav('md')">${I.folder} Proyectos</button>
@@ -788,6 +788,45 @@ function newTaskModal() {
       <button class="btn btn-primary" onclick="createFromModal()">${I.plus} Crear tarea</button>
     </div>`);
   setTimeout(() => { const e = $('#nt-title'); if (e) e.focus(); }, 60);
+}
+
+function createMenu(ev) {
+  ev.stopPropagation();
+  popover(ev, `
+    <div class="pop-section">Crear</div>
+    <button class="pop-item" onclick="closePopovers();newTaskModal()">
+      <span class="pop-icon" style="background:var(--accent-softer);color:var(--accent-text)">${I.list}</span>
+      <span><div class="pop-title">Tarea</div><div class="pop-sub">Un pendiente con estado, fecha y prioridad</div></span>
+    </button>
+    <button class="pop-item" onclick="closePopovers();addListPromptPicker()">
+      <span class="pop-icon" style="background:color-mix(in srgb, #4E9CF5 14%, transparent);color:#4E9CF5">${I.all}</span>
+      <span><div class="pop-title">Lista</div><div class="pop-sub">Un grupo de tareas dentro de un espacio</div></span>
+    </button>
+    <button class="pop-item" onclick="closePopovers();addSpacePrompt()">
+      <span class="pop-icon" style="background:color-mix(in srgb, #A78BFA 14%, transparent);color:#A78BFA">${I.folder}</span>
+      <span><div class="pop-title">Espacio</div><div class="pop-sub">Un proyecto entero (ej. Akatrek, Mi Setup)</div></span>
+    </button>
+    <button class="pop-item" onclick="closePopovers();nav('md')">
+      <span class="pop-icon" style="background:color-mix(in srgb, #34C77B 14%, transparent);color:#34C77B">${I.file}</span>
+      <span><div class="pop-title">Vigilar carpeta</div><div class="pop-sub">Ver cambios y pendientes en archivos .md</div></span>
+    </button>`);
+}
+
+async function addListPromptPicker() {
+  if (!S.spaces.length) { toast('Crea primero un espacio', 'err'); return; }
+  if (S.spaces.length === 1) return addListPrompt(S.spaces[0].id);
+  // Mini-modal para elegir espacio
+  showModal(`
+    <h2>Nueva lista</h2>
+    <div class="sec"><h4>¿En qué espacio?</h4>
+      ${S.spaces.map(sp => `
+        <button class="check-row" style="width:100%;text-align:left;border:1px solid var(--border);border-radius:var(--radius-md);padding:12px;margin-bottom:6px;cursor:pointer;background:var(--surface)"
+          onclick="closeModal();addListPrompt(${sp.id})">
+          <span style="font-size:18px">${esc(sp.icon || '📁')}</span>
+          <span style="font-weight:700">${esc(sp.name)}</span>
+        </button>`).join('')}
+    </div>
+    <div style="display:flex;justify-content:flex-end"><button class="btn btn-soft" onclick="closeModal()">Cancelar</button></div>`);
 }
 async function createFromModal() {
   const title = $('#nt-title').value.trim();
