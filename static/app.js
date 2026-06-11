@@ -217,8 +217,8 @@ function renderTopbar() {
   }
   const tabsViews = enabledViews();
   const showTabs = route.type === 'list' || route.type === 'all';
-  const tabIcons = { lista: I.list, tablero: I.board, calendario: I.cal };
-  const tabNames = { lista: 'Lista', tablero: 'Tablero', calendario: 'Calendario' };
+  const tabIcons = { lista: I.list, tablero: I.board, calendario: I.cal, tabla: I.all };
+  const tabNames = { lista: 'Lista', tablero: 'Tablero', calendario: 'Calendario', tabla: 'Tabla' };
 
   let html = `<div class="topbar-row">
     <div class="crumb">${crumb}</div>
@@ -240,7 +240,69 @@ function renderMain() {
   if (route.type === 'md') return viewMD();
   if (route.tab === 'tablero') return viewBoard();
   if (route.tab === 'calendario') return viewCalendar();
+  if (route.tab === 'tabla') return viewTable();
   return viewList();
+}
+
+/* ---------------------------------------------------------- helpers de campos custom */
+function customFieldsForRoute() {
+  // Campos visibles para la ruta actual. Lista → los de esa lista. All → vacío (heterogéneo).
+  if (route.type !== 'list') return [];
+  const l = listById(route.listId);
+  return (l && Array.isArray(l.custom_fields)) ? l.custom_fields : [];
+}
+function renderCustomCell(field, value) {
+  const v = value;
+  if (v === undefined || v === null || v === '') return `<span class="placeholder">—</span>`;
+  switch (field.type) {
+    case 'checkbox':
+      return v ? `<span class="cf-bool cf-true">✓</span>` : `<span class="cf-bool cf-false">·</span>`;
+    case 'dropdown': {
+      const opt = (field.options || []).find(o => o.label === v);
+      const color = opt ? opt.color : '#8B97A6';
+      return `<span class="chip" style="background:color-mix(in srgb, ${color} 18%, transparent);color:${color};font-weight:800">${esc(String(v))}</span>`;
+    }
+    case 'number':
+    case 'currency': {
+      const n = Number(v);
+      if (Number.isNaN(n)) return `<span class="placeholder">—</span>`;
+      return `<span>${field.type === 'currency' ? '$' : ''}${n.toLocaleString('es-ES')}</span>`;
+    }
+    case 'date':
+      return `<span class="chip">${esc(String(v))}</span>`;
+    case 'url':
+      return `<a href="${esc(String(v))}" target="_blank" rel="noopener" onclick="event.stopPropagation()" class="cf-url">${esc(shortenUrl(String(v)))}</a>`;
+    default:
+      return esc(String(v));
+  }
+}
+function shortenUrl(u) {
+  try { const x = new URL(u); return x.host + (x.pathname === '/' ? '' : x.pathname); } catch (e) { return u.length > 30 ? u.slice(0, 30) + '…' : u; }
+}
+function renderCustomEditor(field, value, onChange) {
+  // Devuelve HTML para editar el valor en el panel de tarea
+  const safeVal = (value === undefined || value === null) ? '' : value;
+  const fid = field.id;
+  switch (field.type) {
+    case 'checkbox':
+      return `<input type="checkbox" ${safeVal ? 'checked' : ''} ${onChange('this.checked')} style="width:18px;height:18px;accent-color:var(--accent);cursor:pointer">`;
+    case 'dropdown': {
+      const opts = (field.options || []).map(o =>
+        `<option value="${esc(o.label)}" ${o.label === safeVal ? 'selected' : ''}>${esc(o.label)}</option>`).join('');
+      return `<select ${onChange('this.value')} class="cf-input">
+        <option value="">—</option>${opts}
+      </select>`;
+    }
+    case 'number':
+    case 'currency':
+      return `<input type="number" step="any" value="${esc(safeVal === '' ? '' : String(safeVal))}" ${onChange('this.value ? Number(this.value) : ""')} class="cf-input">`;
+    case 'date':
+      return `<input type="date" value="${esc(String(safeVal))}" ${onChange('this.value')} class="cf-input">`;
+    case 'url':
+      return `<input type="url" value="${esc(String(safeVal))}" placeholder="https://…" ${onChange('this.value')} class="cf-input">`;
+    default:
+      return `<input type="text" value="${esc(String(safeVal))}" ${onChange('this.value')} class="cf-input">`;
+  }
 }
 
 /* ---------------------------------------------------------- piezas de tarea */
@@ -341,6 +403,64 @@ function quickAddRow(statusId, showListCol) {
   if (!listId) return '';
   return `<div class="quick-add-row" data-status="${statusId}">${I.plus}
     <input placeholder="+ Añadir tarea" onkeydown="qaKey(event,${listId},${statusId})"></div>`;
+}
+
+/* ---------------------------------------------------------- vista: tabla (spreadsheet) */
+function viewTable() {
+  const ts = currentTasks();
+  if (!ts.length && q) { $('#main').innerHTML = emptyState('🔍', 'Nada coincide con tu búsqueda', 'Prueba con otras palabras'); return; }
+  const fields = customFieldsForRoute();
+  const showListCol = route.type !== 'list';
+  // Botón para abrir editor de columnas (solo en vista de una lista)
+  const editCols = route.type === 'list'
+    ? `<button class="btn btn-soft" style="margin-bottom:12px" onclick="openCustomFieldsEditor(${route.listId})">${I.edit} Columnas (${fields.length})</button>`
+    : '';
+
+  // Construir grid columns dinámicamente
+  const widthFor = (f) => (f.width || 130) + 'px';
+  const customColsWidth = fields.map(widthFor).join(' ');
+  const gridCols = `24px minmax(180px,1fr) ${showListCol ? '120px ' : ''}110px 100px 120px 44px ${customColsWidth}`;
+
+  let html = `${editCols}<div class="table-view" style="--cols:${gridCols}">
+    <div class="tv-head">
+      <span></span>
+      <span>Nombre</span>
+      ${showListCol ? '<span>Lista</span>' : ''}
+      <span>Fecha</span>
+      <span>Prio.</span>
+      <span>Estado</span>
+      <span class="center" title="Comentarios">${I.comment}</span>
+      ${fields.map(f => `<span title="${esc(f.name)}">${esc(f.name)}</span>`).join('')}
+    </div>`;
+  for (const t of sortTasks(ts)) {
+    html += taskTableV(t, showListCol, fields);
+  }
+  // Quick add al final, en la primera columna (sin importar status)
+  if (route.type === 'list') {
+    html += `<div class="tv-row tv-add">
+      <span></span>
+      <input placeholder="+ Añadir tarea" onkeydown="qaKey(event,${route.listId},null)">
+    </div>`;
+  }
+  html += '</div>';
+  $('#main').innerHTML = html;
+}
+
+function taskTableV(t, showListCol, fields) {
+  const st = statusById(t.status_id);
+  const l = listById(t.list_id);
+  const cmts = commentsOf(t.id).length;
+  const cv = t.custom_values || {};
+  return `<div class="tv-row ${isDone(t) ? 'done' : ''}" onclick="openTask(${t.id})">
+    <span onclick="event.stopPropagation();statusMenu(event,${t.id})">${statusDot(st)}</span>
+    <span class="tv-cell tv-title">${esc(t.title)} ${tagChips(t)}</span>
+    ${showListCol ? `<span class="tv-cell">${l ? esc(l.name) : ''}</span>` : ''}
+    <span class="tv-cell">${dueCell(t)}</span>
+    <span class="tv-cell" onclick="event.stopPropagation();prioMenu(event,${t.id})">${prioFlag(t, true)}</span>
+    <span class="tv-cell"><span class="status-pill" style="background:${st.color}">${esc(st.name)}</span></span>
+    <span class="tv-cell center">${cmts ? `<span class="chip">${I.comment}${cmts}</span>` : `<span class="placeholder">${I.comment}</span>`}</span>
+    ${fields.map(f => `<span class="tv-cell">${renderCustomCell(f, cv[f.id])}</span>`).join('')}
+  </div>`;
 }
 function quickAddFocus(statusId) {
   const row = document.querySelector(`.quick-add-row[data-status="${statusId}"] input`);
@@ -632,6 +752,7 @@ function renderPanel() {
         <div class="tp-row"><span class="tp-label">Etiquetas</span><div class="tp-value">
           <input type="text" placeholder="separadas, por, comas" value="${esc(t.tags.join(', '))}"
             onchange="saveField(${t.id},'tags',this.value.split(',').map(s=>s.trim()).filter(Boolean))"></div></div>
+        ${renderTaskCustomSection(t)}
         <div>
           <div class="tp-section" style="margin-bottom:8px">Descripción</div>
           <textarea class="tp-descr" placeholder="Escribe los detalles…" onblur="saveField(${t.id},'descr',this.value)">${esc(t.descr || '')}</textarea>
@@ -666,6 +787,32 @@ async function saveField(id, field, value) {
   const next = field === 'tags' ? JSON.stringify(value) : value;
   if (String(current) === String(next)) return;
   await api('/api/task', { action: 'update', id, [field]: value });
+  await refresh();
+}
+
+function renderTaskCustomSection(t) {
+  const l = listById(t.list_id);
+  const fields = (l && Array.isArray(l.custom_fields)) ? l.custom_fields : [];
+  if (!fields.length) return '';
+  const cv = t.custom_values || {};
+  const editLink = `<button class="cf-edit-link" onclick="openCustomFieldsEditor(${l.id})" title="Editar columnas">${I.edit} editar</button>`;
+  const rows = fields.map(f => {
+    const handler = (expr) => `onchange="saveCustomValue(${t.id}, '${f.id}', ${expr})"`;
+    return `<div class="tp-row">
+      <span class="tp-label">${esc(f.name)}</span>
+      <div class="tp-value">${renderCustomEditor(f, cv[f.id], handler)}</div>
+    </div>`;
+  }).join('');
+  return `<div class="tp-custom">
+    <div class="tp-section" style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span>Personalizado</span> ${editLink}
+    </div>
+    ${rows}
+  </div>`;
+}
+
+async function saveCustomValue(taskId, fieldId, value) {
+  await api('/api/task', { action: 'update', id: taskId, custom_values: { [fieldId]: value } });
   await refresh();
 }
 async function deleteTask(id) {
@@ -853,6 +1000,124 @@ function closeModal() {
   layer.innerHTML = '';
 }
 
+/* ---------------------------------------------------------- editor de columnas custom */
+let _cfDraft = null; // borrador en memoria mientras el modal está abierto
+
+function openCustomFieldsEditor(listId) {
+  const l = listById(listId);
+  if (!l) { toast('Esa lista ya no existe', 'err'); return; }
+  _cfDraft = JSON.parse(JSON.stringify(l.custom_fields || []));
+  renderCustomFieldsEditor(l);
+}
+
+function renderCustomFieldsEditor(l) {
+  const fields = _cfDraft || [];
+  const typeOpts = [
+    ['text', 'Texto'],
+    ['number', 'Número'],
+    ['currency', 'Dinero'],
+    ['date', 'Fecha'],
+    ['url', 'Enlace'],
+    ['checkbox', 'Casilla'],
+    ['dropdown', 'Selector'],
+  ];
+  const rows = fields.map((f, i) => `
+    <div class="cf-edit-row">
+      <span class="cf-edit-handle" title="Tipo">${cfTypeIcon(f.type)}</span>
+      <input type="text" value="${esc(f.name)}" placeholder="Nombre"
+        onchange="cfDraftUpdate(${i}, 'name', this.value)" class="cf-input">
+      <select onchange="cfDraftUpdate(${i}, 'type', this.value)" class="cf-input" style="max-width:140px">
+        ${typeOpts.map(([v, lab]) => `<option value="${v}" ${f.type === v ? 'selected' : ''}>${lab}</option>`).join('')}
+      </select>
+      <button class="icon-btn btn-danger" onclick="cfDraftRemove(${i})" title="Quitar">${I.trash}</button>
+      ${f.type === 'dropdown' ? cfDropdownOptions(f, i) : ''}
+    </div>`).join('');
+  showModal(`
+    <h2>Columnas personalizadas — ${esc(l.name)}</h2>
+    <div class="faint" style="font-size:13px;margin-bottom:var(--space-4)">
+      Añade campos propios de esta lista: presupuesto, esfuerzo, enlace al PR, etc. Aparecen en la vista <strong>Tabla</strong> y en el panel de la tarea.
+    </div>
+    <div class="sec" id="cf-rows">${rows || '<div class="faint" style="padding:12px 0">Sin columnas. Añade la primera ↓</div>'}</div>
+    <div class="sec">
+      <button class="btn btn-ghost" onclick="cfDraftAdd()">${I.plus} Añadir columna</button>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+      <span class="faint" style="font-size:12px">Los valores que ya hayas escrito en tareas se conservan.</span>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-soft" onclick="closeModal();_cfDraft=null">Cancelar</button>
+        <button class="btn btn-primary" onclick="cfDraftSave(${l.id})">Guardar columnas</button>
+      </div>
+    </div>`);
+}
+
+function cfTypeIcon(t) {
+  const map = { text: 'Aa', number: '123', currency: '$', date: '📅', url: '🔗', checkbox: '☑', dropdown: '▾' };
+  return `<span style="font-weight:900;font-size:11px;color:var(--muted)">${map[t] || '?'}</span>`;
+}
+
+function cfDropdownOptions(f, fi) {
+  const opts = f.options || [];
+  return `<div class="cf-dropdown-opts">
+    <div class="faint" style="font-size:11px;margin-bottom:4px">Opciones:</div>
+    ${opts.map((o, oi) => `
+      <div class="cf-opt-row">
+        <input type="color" value="${esc(o.color || '#8B97A6')}" onchange="cfDraftOpt(${fi},${oi},'color',this.value)">
+        <input type="text" value="${esc(o.label)}" placeholder="Etiqueta" onchange="cfDraftOpt(${fi},${oi},'label',this.value)" class="cf-input">
+        <button class="icon-btn btn-danger" onclick="cfDraftOptRemove(${fi},${oi})" style="width:26px;height:26px">${I.x}</button>
+      </div>`).join('')}
+    <button class="btn btn-ghost" style="margin-top:4px;padding:4px 10px;min-height:auto;font-size:12px" onclick="cfDraftOptAdd(${fi})">${I.plus} Opción</button>
+  </div>`;
+}
+
+function cfDraftAdd() {
+  _cfDraft = _cfDraft || [];
+  _cfDraft.push({ name: '', type: 'text' });
+  refreshCfEditor();
+}
+function cfDraftRemove(i) {
+  _cfDraft.splice(i, 1);
+  refreshCfEditor();
+}
+function cfDraftUpdate(i, key, val) {
+  _cfDraft[i][key] = val;
+  if (key === 'type' && val === 'dropdown' && !_cfDraft[i].options) _cfDraft[i].options = [];
+  refreshCfEditor();
+}
+function cfDraftOptAdd(fi) {
+  _cfDraft[fi].options = _cfDraft[fi].options || [];
+  _cfDraft[fi].options.push({ label: '', color: '#8B97A6' });
+  refreshCfEditor();
+}
+function cfDraftOptRemove(fi, oi) {
+  _cfDraft[fi].options.splice(oi, 1);
+  refreshCfEditor();
+}
+function cfDraftOpt(fi, oi, key, val) {
+  _cfDraft[fi].options[oi][key] = val;
+  // No re-render para no perder el foco del input siguiente
+}
+function refreshCfEditor() {
+  // Re-render manteniendo el modal abierto. Encuentro la lista actual por el título.
+  const m = document.querySelector('.modal h2');
+  if (!m) return;
+  const name = m.textContent.replace('Columnas personalizadas — ', '').trim();
+  const l = S.spaces.flatMap(sp => sp.lists).find(x => x.name === name);
+  if (l) renderCustomFieldsEditor(l);
+}
+async function cfDraftSave(listId) {
+  // Validar: cada campo necesita nombre
+  for (const f of _cfDraft) {
+    if (!String(f.name || '').trim()) { toast('Cada columna necesita un nombre', 'err'); return; }
+  }
+  try {
+    await api('/api/list', { action: 'set_fields', id: listId, custom_fields: _cfDraft });
+    _cfDraft = null;
+    closeModal();
+    toast('Columnas guardadas ✓');
+    await refresh();
+  } catch (e) {}
+}
+
 function openSettings() {
   const theme = S.settings.theme || 'dark';
   const accent = (S.settings.accent || '#E0314F').toLowerCase();
@@ -871,10 +1136,10 @@ function openSettings() {
         ${SWATCHES.map(c => `<div class="swatch ${c.toLowerCase() === accent ? 'active' : ''}" data-color="${c}" style="background:${c}" onclick="setAccent('${c}')"></div>`).join('')}
       </div></div>
     <div class="sec"><h4>Vistas activas (estilo ClickUp: tú decides)</h4>
-      ${['lista', 'tablero', 'calendario'].map(v => `
+      ${['lista', 'tablero', 'calendario', 'tabla'].map(v => `
         <label class="check-row"><input type="checkbox" ${views.includes(v) ? 'checked' : ''} onchange="toggleView('${v}',this)">
         ${v[0].toUpperCase() + v.slice(1)}</label>`).join('')}
-      <div class="faint" style="font-size:12px">Inicio y Proyectos siempre están disponibles.</div></div>
+      <div class="faint" style="font-size:12px">Inicio y Proyectos siempre están disponibles. Tabla es ideal para campos personalizados.</div></div>
     <div class="sec" id="status-edit-sec"><h4>Estados de tarea</h4>
       ${renderStatusEditList()}
       <button class="btn btn-ghost" onclick="addStatus()" style="margin-top:6px">${I.plus} Nuevo estado</button></div>
@@ -927,7 +1192,7 @@ async function toggleView(v, el) {
     views = views.filter(x => x !== v);
     if (!views.length) { views = [v]; el.checked = true; toast('Debe quedar al menos una vista', 'err'); }
   }
-  const order = ['lista', 'tablero', 'calendario'];
+  const order = ['lista', 'tablero', 'calendario', 'tabla'];
   views.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   S.settings.views = JSON.stringify(views);
   await api('/api/setting', { key: 'views', value: S.settings.views });

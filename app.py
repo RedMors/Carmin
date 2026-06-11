@@ -60,23 +60,25 @@ CREATE TABLE IF NOT EXISTS spaces(
   pos  INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS lists(
-  id       INTEGER PRIMARY KEY,
-  space_id INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
-  name     TEXT NOT NULL,
-  pos      INTEGER NOT NULL DEFAULT 0
+  id            INTEGER PRIMARY KEY,
+  space_id      INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+  name          TEXT NOT NULL,
+  pos           INTEGER NOT NULL DEFAULT 0,
+  custom_fields TEXT NOT NULL DEFAULT '[]'  -- JSON: [{id,name,type,options?,width?}]
 );
 CREATE TABLE IF NOT EXISTS tasks(
-  id         INTEGER PRIMARY KEY,
-  list_id    INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
-  title      TEXT NOT NULL,
-  descr      TEXT DEFAULT '',
-  status_id  INTEGER REFERENCES statuses(id),
-  priority   TEXT DEFAULT '',            -- urgente | alta | normal | baja | ''
-  due        TEXT DEFAULT '',            -- YYYY-MM-DD
-  tags       TEXT DEFAULT '[]',          -- JSON array
-  created_at TEXT,
-  updated_at TEXT,
-  done_at    TEXT DEFAULT ''
+  id            INTEGER PRIMARY KEY,
+  list_id       INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+  title         TEXT NOT NULL,
+  descr         TEXT DEFAULT '',
+  status_id     INTEGER REFERENCES statuses(id),
+  priority      TEXT DEFAULT '',           -- urgente | alta | normal | baja | ''
+  due           TEXT DEFAULT '',           -- YYYY-MM-DD
+  tags          TEXT DEFAULT '[]',         -- JSON array
+  custom_values TEXT NOT NULL DEFAULT '{}',-- JSON: {field_id: value}
+  created_at    TEXT,
+  updated_at    TEXT,
+  done_at       TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS comments(
   id         INTEGER PRIMARY KEY,
@@ -92,11 +94,24 @@ CREATE TABLE IF NOT EXISTS folders(
 );
 """
 
+# Migraciones suaves: ALTER TABLE para DBs viejas que no tenían las columnas.
+# Cada paso es idempotente: si la columna ya existe, sqlite lanza error pero
+# lo ignoramos. Mantiene el upgrade path sin pedirle nada al usuario.
+SOFT_MIGRATIONS = [
+    "ALTER TABLE lists ADD COLUMN custom_fields TEXT NOT NULL DEFAULT '[]'",
+    "ALTER TABLE tasks ADD COLUMN custom_values TEXT NOT NULL DEFAULT '{}'",
+]
+
 
 def init_db():
     con = db()
     with con:
         con.executescript(SCHEMA)
+        for sql in SOFT_MIGRATIONS:
+            try:
+                con.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # la columna ya existe
         if con.execute("SELECT COUNT(*) c FROM statuses").fetchone()["c"] == 0:
             seed(con)
     con.close()
@@ -160,22 +175,31 @@ def seed(con):
 
 # ---------------------------------------------------------------- estado
 
+def _json_or(v, default):
+    try:
+        return json.loads(v) if v else default
+    except (ValueError, TypeError):
+        return default
+
+
 def get_state():
     con = db()
     try:
         settings = {r["key"]: r["value"] for r in con.execute("SELECT * FROM settings")}
         statuses = [dict(r) for r in con.execute("SELECT * FROM statuses ORDER BY pos,id")]
         spaces = [dict(r) for r in con.execute("SELECT * FROM spaces ORDER BY pos,id")]
-        lists = [dict(r) for r in con.execute("SELECT * FROM lists ORDER BY pos,id")]
+        lists = []
+        for r in con.execute("SELECT * FROM lists ORDER BY pos,id"):
+            d = dict(r)
+            d["custom_fields"] = _json_or(d.get("custom_fields"), [])
+            lists.append(d)
         for s in spaces:
             s["lists"] = [l for l in lists if l["space_id"] == s["id"]]
         tasks = []
         for r in con.execute("SELECT * FROM tasks ORDER BY id"):
             d = dict(r)
-            try:
-                d["tags"] = json.loads(d.get("tags") or "[]")
-            except ValueError:
-                d["tags"] = []
+            d["tags"] = _json_or(d.get("tags"), [])
+            d["custom_values"] = _json_or(d.get("custom_values"), {})
             tasks.append(d)
         comments = [dict(r) for r in con.execute("SELECT * FROM comments ORDER BY id")]
         folders = [dict(r) for r in con.execute("SELECT * FROM folders ORDER BY id")]
@@ -332,13 +356,16 @@ def _task(con, action, b):
         if not con.execute("SELECT 1 FROM lists WHERE id=?", (list_id,)).fetchone():
             raise ApiError("Esa lista no existe")
         status_id = b.get("status_id") or first_status_id(con)
+        custom_vals = b.get("custom_values")
+        if not isinstance(custom_vals, dict):
+            custom_vals = {}
         t = now()
         con.execute(
-            "INSERT INTO tasks(list_id,title,descr,status_id,priority,due,tags,created_at,updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO tasks(list_id,title,descr,status_id,priority,due,tags,custom_values,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
             (list_id, title[:300], str(b.get("descr", ""))[:5000], status_id,
              str(b.get("priority", "")), str(b.get("due", "")),
-             clean_tags(b.get("tags", [])), t, t))
+             clean_tags(b.get("tags", [])), json.dumps(custom_vals), t, t))
         return {"ok": True, "id": con.execute("SELECT last_insert_rowid() i").fetchone()["i"]}
 
     task_id = b.get("id")
@@ -360,6 +387,16 @@ def _task(con, action, b):
                         raise ApiError("La tarea necesita un nombre")
                 sets.append("%s=?" % k)
                 vals.append(v)
+        # Campos custom: merge parcial — solo actualiza las keys enviadas.
+        if "custom_values" in b and isinstance(b["custom_values"], dict):
+            current = _json_or(row["custom_values"], {})
+            for k, v in b["custom_values"].items():
+                if v is None or v == "":
+                    current.pop(str(k), None)
+                else:
+                    current[str(k)] = v
+            sets.append("custom_values=?")
+            vals.append(json.dumps(current))
         if "status_id" in b:
             new_kind = status_kind(con, b["status_id"])
             old_kind = status_kind(con, row["status_id"])
@@ -402,6 +439,42 @@ def _space(con, action, b):
     raise ApiError("Acción desconocida")
 
 
+VALID_FIELD_TYPES = {"text", "number", "date", "url", "checkbox", "dropdown", "currency"}
+
+
+def _clean_field(f, existing_ids):
+    """Normaliza un field definition. Garantiza id único, tipo válido y nombre."""
+    name = str(f.get("name", "")).strip()[:40]
+    if not name:
+        raise ApiError("Cada campo necesita un nombre")
+    ftype = str(f.get("type", "text")).strip().lower()
+    if ftype not in VALID_FIELD_TYPES:
+        raise ApiError(f"Tipo de campo inválido: {ftype}")
+    fid = str(f.get("id") or "").strip()
+    if not fid:
+        # genera ID estable a partir del nombre + sufijo si choca
+        import re as _re
+        base = _re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_") or "field"
+        fid, n = base, 1
+        while fid in existing_ids:
+            n += 1
+            fid = f"{base}_{n}"
+    out = {"id": fid, "name": name, "type": ftype}
+    if ftype == "dropdown":
+        opts = f.get("options") or []
+        if not isinstance(opts, list):
+            opts = []
+        out["options"] = [{"label": str(o.get("label", "")).strip()[:30],
+                           "color": str(o.get("color", "#8B97A6"))[:9]}
+                          for o in opts if isinstance(o, dict) and o.get("label")]
+    if "width" in f:
+        try:
+            out["width"] = max(60, min(400, int(f["width"])))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def _list(con, action, b):
     if action == "create":
         name = str(b.get("name", "")).strip()
@@ -418,6 +491,23 @@ def _list(con, action, b):
         con.execute("UPDATE lists SET name=? WHERE id=?",
                     (str(b.get("name", "")).strip()[:60], b.get("id")))
         return {"ok": True}
+    if action == "set_fields":
+        list_id = b.get("id")
+        if not con.execute("SELECT 1 FROM lists WHERE id=?", (list_id,)).fetchone():
+            raise ApiError("Esa lista no existe")
+        raw = b.get("custom_fields") or []
+        if not isinstance(raw, list):
+            raise ApiError("custom_fields debe ser una lista")
+        cleaned, ids = [], set()
+        for f in raw:
+            if not isinstance(f, dict):
+                continue
+            cf = _clean_field(f, ids)
+            ids.add(cf["id"])
+            cleaned.append(cf)
+        con.execute("UPDATE lists SET custom_fields=? WHERE id=?",
+                    (json.dumps(cleaned), list_id))
+        return {"ok": True, "custom_fields": cleaned}
     if action == "delete":
         con.execute("DELETE FROM lists WHERE id=?", (b.get("id"),))
         return {"ok": True}
