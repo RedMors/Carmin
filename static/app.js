@@ -229,8 +229,11 @@ function renderTopbar() {
   </div>`;
   if (showTabs) {
     html += `<div class="topbar-row" style="min-height:auto">
-      <div class="tabs">` + tabsViews.map(v =>
-        `<button class="tab ${route.tab === v ? 'active' : ''}" onclick="setTab('${v}')">${tabIcons[v]} ${tabNames[v]}</button>`).join('') + `</div>
+      <div class="tabs">
+        ${tabsViews.map(v =>
+          `<button class="tab ${route.tab === v ? 'active' : ''}" onclick="setTab('${v}')">${tabIcons[v]} ${tabNames[v]}</button>`).join('')}
+        <button class="tab tab-add" onclick="openAddViewMenu(event)" title="Agregar vista">${I.plus} Vista</button>
+      </div>
     </div>`;
   }
   $('#topbar').innerHTML = html;
@@ -1046,6 +1049,68 @@ function newTaskModal() {
       <button class="btn btn-primary" onclick="createFromModal()">${I.plus} Crear tarea</button>
     </div>`);
   setTimeout(() => { const e = $('#nt-title'); if (e) e.focus(); }, 60);
+}
+
+/* ---------------------------------------------------------- menú "+ Vista" inline */
+function openAddViewMenu(ev) {
+  ev.stopPropagation();
+  const active = enabledViews();
+  const available = [
+    { id: 'lista', name: 'Lista', icon: I.list, desc: 'Tareas agrupadas por estado' },
+    { id: 'tablero', name: 'Tablero', icon: I.board, desc: 'Kanban con drag & drop' },
+    { id: 'calendario', name: 'Calendario', icon: I.cal, desc: 'Mes con tareas por fecha' },
+    { id: 'tabla', name: 'Tabla', icon: I.all, desc: 'Spreadsheet con columnas custom' },
+  ];
+  const soon = [
+    { id: 'gantt', name: 'Gantt', emoji: '📊', desc: 'Línea de tiempo con dependencias' },
+    { id: 'panel', name: 'Panel', emoji: '📈', desc: 'Métricas y metas del proyecto' },
+    { id: 'documento', name: 'Documento', emoji: '📄', desc: 'Página tipo Notion para notas' },
+    { id: 'cronograma', name: 'Cronograma', emoji: '🗓', desc: 'Timeline horizontal por fechas' },
+    { id: 'mapa', name: 'Mapa mental', emoji: '🧠', desc: 'Whiteboard con ideas conectadas' },
+    { id: 'formulario', name: 'Formulario', emoji: '📝', desc: 'Capturar tareas vía formulario' },
+  ];
+  const renderItem = (v) => {
+    const isActive = active.includes(v.id);
+    return `<button class="pop-item" onclick="toggleViewInline('${v.id}')">
+      <span class="pop-icon" style="background:${isActive ? 'color-mix(in srgb,#34C77B 16%,transparent)' : 'var(--accent-softer)'};color:${isActive ? '#34C77B' : 'var(--accent-text)'}">${v.icon}</span>
+      <span style="flex:1">
+        <div class="pop-title">${v.name} ${isActive ? '<span class="check">activa</span>' : '<span class="add-hint">+ activar</span>'}</div>
+        <div class="pop-sub">${v.desc}</div>
+      </span>
+    </button>`;
+  };
+  popover(ev, `
+    <div class="pop-section">Vistas disponibles</div>
+    ${available.map(renderItem).join('')}
+    <div class="pop-section">Próximamente</div>
+    ${soon.map(v => `
+      <div class="pop-item pop-item-soon" title="Pronto">
+        <span class="pop-icon" style="background:var(--surface2);color:var(--faint);font-size:14px">${v.emoji}</span>
+        <span style="flex:1">
+          <div class="pop-title" style="opacity:.75">${v.name}</div>
+          <div class="pop-sub">${v.desc}</div>
+        </span>
+      </div>`).join('')}`);
+}
+
+async function toggleViewInline(v) {
+  closePopovers();
+  let views = enabledViews();
+  if (views.includes(v)) {
+    if (views.length === 1) { toast('Debe quedar al menos una vista', 'err'); return; }
+    views = views.filter(x => x !== v);
+    if (route.tab === v) route.tab = views[0];
+    toast('Vista ocultada');
+  } else {
+    views.push(v);
+    toast('Vista agregada ✓');
+  }
+  const order = ['lista', 'tablero', 'calendario', 'tabla'];
+  views.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  S.settings.views = JSON.stringify(views);
+  await api('/api/setting', { key: 'views', value: S.settings.views });
+  renderTopbar();
+  renderMain();
 }
 
 function createMenu(ev) {
