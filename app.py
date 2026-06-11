@@ -14,6 +14,8 @@ import threading
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.error
+import urllib.request
 from urllib.parse import urlparse
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -350,6 +352,20 @@ def _expand_vars(s, creds_for_ref):
     return out
 
 
+def _assert_safe_url(url):
+    """Bloquea schemes peligrosos. urllib soporta file://, ftp://, gopher://...
+    Si no validamos, alguien crea una fuente con `file:///etc/passwd` y la app la
+    lee como si fuera una API externa. Limitamos estrictamente a http(s)."""
+    try:
+        p = urlparse(url)
+    except Exception:
+        raise ApiError("URL inválida")
+    if p.scheme not in ("http", "https"):
+        raise ApiError(f"Solo URLs http/https están permitidas. Recibí scheme '{p.scheme}'.")
+    if not p.netloc:
+        raise ApiError("URL inválida (sin host)")
+
+
 def _fetch_source(source, path, max_rows=100):
     """Hace la request HTTP a la fuente externa. Devuelve lista de dicts.
 
@@ -359,8 +375,6 @@ def _fetch_source(source, path, max_rows=100):
       - cred_ref (str)    nombre del bloque en credentials.json
     path es el sufijo: "trip_posts?visibility=eq.public&limit=20"
     """
-    import urllib.request
-    import urllib.error
     cfg = source["config"] if isinstance(source.get("config"), dict) else _json_or(source.get("config"), {})
     cred_ref = cfg.get("cred_ref") or ""
     creds = _load_creds().get(cred_ref, {}) if cred_ref else {}
@@ -377,6 +391,7 @@ def _fetch_source(source, path, max_rows=100):
             path = (path or "") + f"{sep}limit={max_rows}"
     sep = "" if base.endswith("/") or (path or "").startswith("/") else "/"
     url = base + sep + (path or "")
+    _assert_safe_url(url)  # rechaza file://, gopher://, etc.
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
@@ -765,6 +780,15 @@ def _folder(con, action, b):
 VALID_SOURCE_TYPES = {"supabase", "http", "github"}
 
 
+def _validate_source_config(cfg):
+    """Valida el config de una fuente antes de persistirla."""
+    if not isinstance(cfg, dict):
+        raise ApiError("config debe ser un objeto")
+    url = cfg.get("url")
+    if url:
+        _assert_safe_url(str(url))  # rechaza file://, ftp://, etc. desde el momento de crear
+
+
 def _source(con, action, b):
     if action == "create":
         name = str(b.get("name", "")).strip()
@@ -774,8 +798,7 @@ def _source(con, action, b):
         if stype not in VALID_SOURCE_TYPES:
             raise ApiError(f"Tipo de fuente inválido: {stype}")
         cfg = b.get("config") or {}
-        if not isinstance(cfg, dict):
-            raise ApiError("config debe ser un objeto")
+        _validate_source_config(cfg)
         con.execute(
             "INSERT INTO sources(name,type,config,created_at) VALUES(?,?,?,?)",
             (name[:60], stype, json.dumps(cfg), now()),
@@ -787,8 +810,7 @@ def _source(con, action, b):
             sets.append("name=?"); vals.append(str(b["name"]).strip()[:60])
         if "config" in b:
             cfg = b["config"]
-            if not isinstance(cfg, dict):
-                raise ApiError("config debe ser un objeto")
+            _validate_source_config(cfg)
             sets.append("config=?"); vals.append(json.dumps(cfg))
         if not sets:
             return {"ok": True}
@@ -796,7 +818,27 @@ def _source(con, action, b):
         con.execute("UPDATE sources SET " + ",".join(sets) + " WHERE id=?", vals)
         return {"ok": True}
     if action == "delete":
-        con.execute("DELETE FROM sources WHERE id=?", (b.get("id"),))
+        # Antes de borrar: revisar si cred_ref de esta fuente lo usa alguien más.
+        # Si no, borrar también el bloque de credentials.json.
+        sid = b.get("id")
+        row = con.execute("SELECT config FROM sources WHERE id=?", (sid,)).fetchone()
+        cred_ref_to_clean = None
+        if row:
+            cfg = _json_or(row["config"], {})
+            cred_ref = cfg.get("cred_ref")
+            if cred_ref:
+                other = con.execute(
+                    "SELECT 1 FROM sources WHERE id<>? AND config LIKE ? LIMIT 1",
+                    (sid, f'%"cred_ref":"{cred_ref}"%'),
+                ).fetchone()
+                if not other:
+                    cred_ref_to_clean = cred_ref
+        con.execute("DELETE FROM sources WHERE id=?", (sid,))
+        if cred_ref_to_clean:
+            creds = _load_creds()
+            if cred_ref_to_clean in creds:
+                del creds[cred_ref_to_clean]
+                _save_creds(creds)
         return {"ok": True}
     if action == "connect_list":
         # Conecta una lista existente a una fuente.
