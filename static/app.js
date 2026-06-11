@@ -217,7 +217,10 @@ function renderTopbar() {
       : (l ? esc(l.name) : 'Lista');
   }
   const tabsViews = enabledViews();
-  const showTabs = route.type === 'list' || route.type === 'all';
+  // En listas conectadas a fuentes externas, los tabs Lista/Tablero/Calendario/Tabla
+  // no aplican: los datos son read-only y tienen su propia vista. Ocultamos los tabs.
+  const isConnected = route.type === 'list' && listById(route.listId)?.source_id;
+  const showTabs = (route.type === 'list' || route.type === 'all') && !isConnected;
   const tabIcons = { lista: I.list, tablero: I.board, calendario: I.cal, tabla: I.all };
   const tabNames = { lista: 'Lista', tablero: 'Tablero', calendario: 'Calendario', tabla: 'Tabla' };
 
@@ -1071,12 +1074,14 @@ function openAddViewMenu(ev) {
   ];
   const renderItem = (v) => {
     const isActive = active.includes(v.id);
-    return `<button class="pop-item" onclick="toggleViewInline('${v.id}')">
-      <span class="pop-icon" style="background:${isActive ? 'color-mix(in srgb,#34C77B 16%,transparent)' : 'var(--accent-softer)'};color:${isActive ? '#34C77B' : 'var(--accent-text)'}">${v.icon}</span>
-      <span style="flex:1">
-        <div class="pop-title">${v.name} ${isActive ? '<span class="check">activa</span>' : '<span class="add-hint">+ activar</span>'}</div>
+    return `<button class="pop-item pop-view-item ${isActive ? 'on' : ''}" onclick="toggleViewInline('${v.id}')" title="${isActive ? 'Click para ocultar' : 'Click para activar'}">
+      <span class="pop-toggle">${isActive ? '<span class="pop-toggle-check">✓</span>' : ''}</span>
+      <span class="pop-icon" style="background:var(--accent-softer);color:var(--accent-text)">${v.icon}</span>
+      <span style="flex:1;min-width:0">
+        <div class="pop-title">${v.name}</div>
         <div class="pop-sub">${v.desc}</div>
       </span>
+      <span class="pop-toggle-action">${isActive ? 'Ocultar' : 'Activar'}</span>
     </button>`;
   };
   popover(ev, `
