@@ -183,6 +183,33 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 }
 .tab:hover { color: var(--text); }
 .tab.active { color: var(--accent-text); border-bottom-color: var(--accent); }
+.tab.tab-add {
+  color: var(--faint); font-weight: 600;
+  border-bottom-color: transparent;
+  padding-left: 8px; padding-right: 8px;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.tab.tab-add svg { width: 13px; height: 13px; }
+.tab.tab-add:hover { color: var(--accent-text); background: var(--accent-softer); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+
+.pop-title .check {
+  font-size: 10px; font-weight: 800; letter-spacing: .4px;
+  color: #34C77B; background: color-mix(in srgb, #34C77B 14%, transparent);
+  padding: 1px 6px; border-radius: var(--radius-full); margin-left: 6px;
+  vertical-align: middle;
+}
+.pop-title .add-hint {
+  font-size: 10px; font-weight: 700;
+  color: var(--accent-text); background: var(--accent-softer);
+  padding: 1px 6px; border-radius: var(--radius-full); margin-left: 6px;
+  vertical-align: middle; opacity: 0; transition: opacity var(--dur-fast);
+}
+.pop-item:hover .pop-title .add-hint { opacity: 1; }
+.pop-item-soon {
+  display: flex; align-items: flex-start; gap: 10px; width: 100%;
+  padding: 9px 10px; border-radius: var(--radius-sm);
+  cursor: not-allowed; opacity: .6;
+}
 .top-spacer { flex: 1; }
 .search {
   display: flex; align-items: center; gap: 8px;
