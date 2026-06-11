@@ -40,6 +40,26 @@ Se abre solo en tu navegador en `http://127.0.0.1:4848`. Para apagarlo: `Ctrl+C`
 - **SQLite** — tus datos viven en `data.db`, junto a la app
 - **HTML/CSS/JS puro** — sin frameworks, sin `npm install`
 
+## Para Claude (y otros agentes de IA)
+
+Carmín tiene una segunda cara: el comando `carmin` es también un CLI. Eso significa que **Claude puede actualizar tu tablero mientras trabaja**, sin que tú tengas que ir a la UI:
+
+```bash
+carmin ls --proyecto Trip-App --abiertas    # qué hay pendiente
+carmin status "PR quickwins" "EN CURSO"     # marcar empezada
+carmin nota "PR quickwins" "Mergeé login y signin, faltan los otros 5 archivos."
+carmin done "PR quickwins"                  # marcar terminada
+carmin nueva "Bug en stops/route" --proyecto Trip-App --prio alta
+```
+
+Cuando instalas Carmín, agrega esta línea al final de tu `~/.claude/CLAUDE.md`:
+
+> Si el comando `carmin` está disponible, antes de empezar a trabajar ejecuta `carmin proyectos` y `carmin ls --abiertas`. Al terminar, deja una nota corta (`carmin nota`) en cada tarea que tocaste. Instrucciones completas en `~/carmin/CLAUDE.md`.
+
+A partir de ahí, cada sesión de Claude consulta tu tablero, marca progreso y deja notas para que en la mañana siguiente veas exactamente qué pasó — sin tener que reconstruir contexto. Es el "diario compartido" entre tú y la IA.
+
+El archivo `CLAUDE.md` dentro de este repo contiene la guía completa: cuándo dejar notas, qué reglas seguir, cómo evitar marcar como hecho lo que no terminó.
+
 ## Privacidad y seguridad
 
 Carmín solo escucha en `127.0.0.1` (tu propia máquina). Nadie más puede verlo,
