@@ -211,7 +211,9 @@ function renderTopbar() {
   else if (route.type === 'md') crumb = 'Proyectos';
   else if (route.type === 'list') {
     const l = listById(route.listId), sp = l && spaceOfList(l.id);
-    crumb = l ? `${esc(sp.icon)} ${esc(sp.name)} <span class="sep">/</span> ${esc(l.name)}` : 'Lista';
+    crumb = l && sp
+      ? `${esc(sp.icon || '📁')} ${esc(sp.name)} <span class="sep">/</span> ${esc(l.name)}`
+      : (l ? esc(l.name) : 'Lista');
   }
   const tabsViews = enabledViews();
   const showTabs = route.type === 'list' || route.type === 'all';
