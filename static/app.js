@@ -188,9 +188,10 @@ function renderSidebar() {
       </div>`;
     if (open) {
       for (const l of sp.lists) {
-        const n = S.tasks.filter(t => t.list_id === l.id && !isDone(t)).length;
+        const connected = !!l.source_id;
+        const n = connected ? '' : (S.tasks.filter(t => t.list_id === l.id && !isDone(t)).length || '');
         html += `<button class="nav-item list-item ${route.type === 'list' && route.listId === l.id ? 'active' : ''}" onclick="nav('list',${l.id})">
-          ${esc(l.name)} <span class="spacer"></span><span class="faint" style="font-size:11.5px">${n || ''}</span></button>`;
+          ${esc(l.name)}${connected ? ' <span class="list-connected-badge">⚡</span>' : ''} <span class="spacer"></span><span class="faint" style="font-size:11.5px">${n}</span></button>`;
       }
       html += `<button class="nav-item list-item faint" style="font-size:12.5px" onclick="addListPrompt(${sp.id})">${I.plus} Nueva lista</button>`;
     }
@@ -238,10 +239,118 @@ function renderTopbar() {
 function renderMain() {
   if (route.type === 'inicio') return viewInicio();
   if (route.type === 'md') return viewMD();
+  // Lista conectada a fuente externa → render distinto, read-only.
+  if (route.type === 'list') {
+    const l = listById(route.listId);
+    if (l && l.source_id) return viewSourceList(l);
+  }
   if (route.tab === 'tablero') return viewBoard();
   if (route.tab === 'calendario') return viewCalendar();
   if (route.tab === 'tabla') return viewTable();
   return viewList();
+}
+
+/* ---------------------------------------------------------- vista: lista conectada (read-only) */
+const _srcCache = {}; // { list_id: { rows, error, fetchedAt } }
+async function fetchSourceList(listId, force) {
+  const cached = _srcCache[listId];
+  if (!force && cached && Date.now() - cached.fetchedAt < 30000) return cached;
+  try {
+    const r = await fetch('/api/source/fetch?list_id=' + listId);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'error');
+    _srcCache[listId] = { rows: d.rows || [], source_name: d.source_name, source_type: d.source_type, fetchedAt: Date.now() };
+  } catch (e) {
+    _srcCache[listId] = { error: e.message || 'No se pudo cargar', fetchedAt: Date.now() };
+  }
+  return _srcCache[listId];
+}
+
+function viewSourceList(l) {
+  const data = _srcCache[l.id];
+  if (!data) {
+    $('#main').innerHTML = `<div class="src-banner">${srcBadge(null)} Cargando datos…</div>` +
+      '<div class="skeleton" style="margin:20px 0"></div>'.repeat(5);
+    fetchSourceList(l.id).then(() => { if (listById(route.listId) === l) viewSourceList(l); });
+    return;
+  }
+  let html = `<div class="src-banner">
+    ${srcBadge(data.source_type)} <strong>${esc(data.source_name || 'Fuente externa')}</strong>
+    <span class="faint">· solo lectura · actualizado ${esc(new Date(data.fetchedAt).toLocaleTimeString('es-ES'))}</span>
+    <span class="spacer"></span>
+    <button class="btn btn-soft" onclick="reloadSource(${l.id})">${I.refresh} Refrescar</button>
+    <button class="btn btn-soft" onclick="editSourceConnection(${l.id})">${I.edit} Editar</button>
+  </div>`;
+  if (data.error) {
+    html += emptyState('⚠️', 'No pude leer la fuente', esc(data.error));
+    $('#main').innerHTML = html;
+    return;
+  }
+  if (!data.rows.length) {
+    html += emptyState('📭', 'La fuente no devolvió filas', 'Revisa el query o el mapeo.');
+    $('#main').innerHTML = html;
+    return;
+  }
+  // Tabla simple con columnas según mapeo
+  html += `<div class="src-table">
+    <div class="src-head">
+      <span>#</span>
+      <span>Título</span>
+      <span>Estado</span>
+      <span>Resto</span>
+    </div>`;
+  data.rows.forEach((r, i) => {
+    const extras = Object.entries(r._raw || {}).filter(([k]) => !['id', 'title', 'name', 'status', 'stage'].includes(k)).slice(0, 4);
+    html += `<div class="src-row" onclick="openSourceRow(${l.id},${i})">
+      <span class="faint">${i + 1}</span>
+      <span class="src-title">${esc(r.title || '(sin título)')}</span>
+      <span>${r.status ? `<span class="chip">${esc(String(r.status))}</span>` : '<span class="placeholder">—</span>'}</span>
+      <span class="src-extras faint">${extras.map(([k, v]) => `<span><strong>${esc(k)}:</strong> ${esc(String(v).slice(0, 40))}</span>`).join(' · ')}</span>
+    </div>`;
+  });
+  html += '</div>';
+  $('#main').innerHTML = html;
+}
+
+function srcBadge(type) {
+  const colors = { supabase: '#3ECF8E', http: '#4E9CF5', github: '#A78BFA' };
+  const c = colors[type] || '#8B97A6';
+  const label = type === 'supabase' ? 'Supabase' : (type === 'http' ? 'HTTP' : (type === 'github' ? 'GitHub' : 'Externa'));
+  return `<span class="src-badge" style="background:color-mix(in srgb, ${c} 18%, transparent);color:${c}">⚡ ${label}</span>`;
+}
+
+async function reloadSource(listId) {
+  delete _srcCache[listId];
+  const l = listById(listId);
+  if (l) viewSourceList(l);
+  await fetchSourceList(listId, true);
+  if (listById(route.listId)?.id === listId) viewSourceList(listById(listId));
+}
+
+function openSourceRow(listId, idx) {
+  const data = _srcCache[listId];
+  const r = data?.rows[idx];
+  if (!r) return;
+  const raw = r._raw || {};
+  const fields = Object.entries(raw).map(([k, v]) =>
+    `<div class="tp-row"><span class="tp-label">${esc(k)}</span><div class="tp-value" style="word-break:break-all">${
+      typeof v === 'object' ? `<pre style="margin:0;font-size:11px;color:var(--muted)">${esc(JSON.stringify(v, null, 2))}</pre>` : esc(String(v))
+    }</div></div>`).join('');
+  showModal(`
+    <h2>${esc(r.title || 'Fila')}</h2>
+    <div class="faint" style="font-size:12px;margin-bottom:var(--space-3)">Solo lectura — los cambios se hacen en la fuente original.</div>
+    <div>${fields}</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:var(--space-4)">
+      <button class="btn btn-primary" onclick="closeModal()">Cerrar</button>
+    </div>`);
+}
+
+async function editSourceConnection(listId) {
+  if (!confirm('¿Desconectar esta lista de la fuente externa? Vuelve a ser una lista local vacía.')) return;
+  await api('/api/source', { action: 'connect_list', list_id: listId, source_id: null, path: '', mapping: {} });
+  delete _srcCache[listId];
+  toast('Lista desconectada');
+  await refresh();
 }
 
 /* ---------------------------------------------------------- helpers de campos custom */
@@ -955,10 +1064,145 @@ function createMenu(ev) {
       <span class="pop-icon" style="background:color-mix(in srgb, #A78BFA 14%, transparent);color:#A78BFA">${I.folder}</span>
       <span><div class="pop-title">Espacio</div><div class="pop-sub">Un proyecto entero (ej. Akatrek, Mi Setup)</div></span>
     </button>
+    <button class="pop-item" onclick="closePopovers();openConnectSourceModal()">
+      <span class="pop-icon" style="background:color-mix(in srgb, #34C77B 14%, transparent);color:#34C77B">⚡</span>
+      <span><div class="pop-title">Conectar fuente</div><div class="pop-sub">Trae datos desde Supabase, una API o GitHub</div></span>
+    </button>
     <button class="pop-item" onclick="closePopovers();nav('md')">
-      <span class="pop-icon" style="background:color-mix(in srgb, #34C77B 14%, transparent);color:#34C77B">${I.file}</span>
+      <span class="pop-icon" style="background:color-mix(in srgb, #F5A524 14%, transparent);color:#F5A524">${I.file}</span>
       <span><div class="pop-title">Vigilar carpeta</div><div class="pop-sub">Ver cambios y pendientes en archivos .md</div></span>
     </button>`);
+}
+
+/* ---------------------------------------------------------- conectar fuente externa */
+function openConnectSourceModal() {
+  if (!S.spaces.length) { toast('Crea primero un espacio', 'err'); return; }
+  showModal(`
+    <h2>Conectar fuente</h2>
+    <div class="faint" style="margin-bottom:var(--space-4);font-size:13px">
+      Trae datos desde un servicio externo a una lista nueva en Carmín.
+      Los datos se ven en <strong>solo lectura</strong> — los cambios reales se hacen en la fuente.
+    </div>
+    <div class="sec">
+      <h4>Tipo</h4>
+      <div class="theme-cards">
+        <div class="theme-card active" data-stype="supabase" onclick="cs_pickType(this,'supabase')">
+          <div class="preview" style="background:linear-gradient(135deg,#3ECF8E 0%,#1E1318 100%)"></div>
+          Supabase
+        </div>
+        <div class="theme-card" data-stype="http" onclick="cs_pickType(this,'http')">
+          <div class="preview" style="background:linear-gradient(135deg,#4E9CF5 0%,#1E1318 100%)"></div>
+          API genérica
+        </div>
+      </div>
+    </div>
+    <div id="cs-fields"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px">
+      <button class="btn btn-soft" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="cs_submit()">Crear y conectar</button>
+    </div>`);
+  cs_renderFields('supabase');
+}
+
+let _csType = 'supabase';
+function cs_pickType(el, type) {
+  _csType = type;
+  document.querySelectorAll('.theme-card').forEach(c => c.classList.toggle('active', c.dataset.stype === type));
+  cs_renderFields(type);
+}
+function cs_renderFields(type) {
+  const spaceOptions = S.spaces.map(sp => `<option value="${sp.id}">${esc(sp.icon || '')} ${esc(sp.name)}</option>`).join('');
+  let html = `
+    <div class="sec">
+      <h4>Espacio donde crear la lista</h4>
+      <select id="cs-space" class="cf-input">${spaceOptions}</select>
+    </div>
+    <div class="sec">
+      <h4>Nombre de la nueva lista</h4>
+      <input type="text" id="cs-list-name" placeholder="Ej: Trips activos">
+    </div>`;
+  if (type === 'supabase') {
+    html += `
+      <div class="sec">
+        <h4>URL del proyecto Supabase</h4>
+        <input type="text" id="cs-url" placeholder="https://xxx.supabase.co">
+        <div class="faint" style="font-size:12px;margin-top:4px">La parte <code>/rest/v1</code> se agrega sola.</div>
+      </div>
+      <div class="sec">
+        <h4>Anon key (public)</h4>
+        <input type="text" id="cs-key" placeholder="eyJ... o sb_publishable_...">
+        <div class="faint" style="font-size:12px;margin-top:4px">Se guarda en <code>~/carmin/credentials.json</code> (en .gitignore), nunca en la base.</div>
+      </div>
+      <div class="sec">
+        <h4>Query</h4>
+        <input type="text" id="cs-path" value="trip_posts?select=id,title,status&limit=20" placeholder="tabla?col=eq.valor&select=...">
+        <div class="faint" style="font-size:12px;margin-top:4px">Sintaxis estándar PostgREST. Sin la URL — solo lo que va después de <code>/rest/v1/</code>.</div>
+      </div>`;
+  } else {
+    html += `
+      <div class="sec">
+        <h4>URL completa de la API</h4>
+        <input type="text" id="cs-url" placeholder="https://api.tuapp.com/v1/items">
+      </div>
+      <div class="sec">
+        <h4>Header de autorización (opcional)</h4>
+        <input type="text" id="cs-key" placeholder="Bearer xxx... o ApiKey ...">
+      </div>
+      <div class="sec">
+        <h4>Path adicional (opcional)</h4>
+        <input type="text" id="cs-path" placeholder="?status=open">
+      </div>`;
+  }
+  html += `
+    <div class="sec">
+      <h4>Mapeo de campos (qué campo del JSON usar)</h4>
+      <div style="display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center">
+        <span class="faint" style="font-size:12px">Título</span>
+        <input type="text" id="cs-map-title" value="title" placeholder="ej: name">
+        <span class="faint" style="font-size:12px">Estado</span>
+        <input type="text" id="cs-map-status" value="status" placeholder="ej: stage">
+      </div>
+    </div>`;
+  $('#cs-fields').innerHTML = html;
+}
+
+async function cs_submit() {
+  const type = _csType;
+  const spaceId = Number($('#cs-space').value);
+  const listName = $('#cs-list-name').value.trim();
+  const url = $('#cs-url').value.trim();
+  const key = $('#cs-key').value.trim();
+  const path = $('#cs-path').value.trim();
+  const mapTitle = $('#cs-map-title').value.trim() || 'title';
+  const mapStatus = $('#cs-map-status').value.trim() || 'status';
+  if (!listName || !url) { toast('Faltan campos requeridos', 'err'); return; }
+
+  // 1) Guardar credencial (si la dieron)
+  const credRef = (type === 'supabase' ? 'supa_' : 'http_') + Date.now().toString(36);
+  if (key) {
+    const credKey = type === 'supabase' ? 'anon_key' : 'auth';
+    await api('/api/creds', { action: 'set', ref: credRef, values: { [credKey]: key } });
+  }
+  // 2) Crear fuente
+  const cfg = type === 'supabase'
+    ? { url: url.replace(/\/+$/, '') + '/rest/v1', cred_ref: credRef,
+        headers: { apikey: '${anon_key}', Authorization: 'Bearer ${anon_key}' } }
+    : { url, cred_ref: credRef, headers: key ? { Authorization: '${auth}' } : {} };
+  const sourceRes = await api('/api/source', {
+    action: 'create', name: `${type === 'supabase' ? 'Supabase' : 'HTTP'}: ${listName}`,
+    type, config: cfg,
+  });
+  // 3) Crear lista en el espacio
+  const listRes = await api('/api/list', { action: 'create', space_id: spaceId, name: listName });
+  // 4) Conectar
+  await api('/api/source', {
+    action: 'connect_list', list_id: listRes.id, source_id: sourceRes.id,
+    path, mapping: { title: mapTitle, status: mapStatus },
+  });
+  closeModal();
+  toast('Fuente conectada ✓');
+  await refresh();
+  nav('list', listRes.id);
 }
 
 async function addListPromptPicker() {
