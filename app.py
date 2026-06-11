@@ -26,6 +26,7 @@ DEFAULT_PORT = 4848
 EXCLUDE_DIRS = {
     "node_modules", ".git", ".next", "dist", "build", "__pycache__",
     ".vercel", ".turbo", "coverage", ".cache", "vendor", ".expo", ".DS_Store",
+    "test-results", "playwright-report", "out", "tmp",
 }
 
 
