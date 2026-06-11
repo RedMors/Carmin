@@ -323,6 +323,93 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 }
 .quick-add-row:hover, .quick-add-row:focus-within { background: var(--surface2); color: var(--accent-text); }
 
+/* ---------------------------------------------------------- vista tabla (spreadsheet) */
+.table-view {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow-x: auto;
+}
+.tv-head, .tv-row {
+  display: grid;
+  grid-template-columns: var(--cols);
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  min-width: fit-content;
+}
+.tv-head {
+  padding: 9px 12px;
+  font-size: 11px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase;
+  color: var(--faint);
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 4;
+}
+.tv-head .center { text-align: center; display: flex; justify-content: center; }
+.tv-row {
+  border-bottom: 1px solid var(--border);
+  min-height: 38px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.tv-row:last-child { border-bottom: none; }
+.tv-row:hover { background: var(--surface2); }
+.tv-row.done .tv-title { text-decoration: line-through; color: var(--muted); }
+.tv-cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.tv-cell.center { text-align: center; display: flex; justify-content: center; }
+.tv-title { font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.tv-row .placeholder { color: var(--faint); opacity: 0; transition: opacity var(--dur-fast); }
+.tv-row:hover .placeholder { opacity: 1; }
+.tv-add { background: var(--surface2); color: var(--faint); }
+.tv-add input {
+  grid-column: 2 / -1;
+  background: none; border: none; outline: none; padding: 6px 0;
+  color: var(--text); font-size: 13.5px;
+}
+.tv-add:hover, .tv-add:focus-within { color: var(--accent-text); }
+
+.cf-bool { display: inline-flex; width: 18px; height: 18px; border-radius: 4px; align-items: center; justify-content: center; font-weight: 900; font-size: 12px; }
+.cf-bool.cf-true { background: color-mix(in srgb, #34C77B 22%, transparent); color: #34C77B; }
+.cf-bool.cf-false { color: var(--faint); }
+.cf-url { color: var(--accent-text); text-decoration: none; font-weight: 600; }
+.cf-url:hover { text-decoration: underline; }
+
+/* ---------------------------------------------------------- editor de columnas */
+.cf-edit-row {
+  display: grid; grid-template-columns: 28px 1fr auto 30px;
+  gap: 8px; align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.cf-edit-row:last-child { border-bottom: none; }
+.cf-edit-handle {
+  width: 28px; height: 28px; border-radius: 6px;
+  background: var(--surface2); color: var(--faint);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.cf-input {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 7px 10px; outline: none;
+  width: 100%; min-width: 0;
+}
+.cf-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-softer); }
+.cf-dropdown-opts {
+  grid-column: 2 / -1; padding: 8px 0 4px 0;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.cf-opt-row { display: grid; grid-template-columns: 34px 1fr 26px; gap: 6px; align-items: center; }
+.cf-opt-row input[type="color"] { width: 34px; height: 30px; border: none; padding: 0; background: none; border-radius: var(--radius-sm); cursor: pointer; }
+
+/* Sección custom en el panel de tarea */
+.tp-custom { padding-top: 4px; }
+.cf-edit-link {
+  font-size: 11px; font-weight: 700; color: var(--accent-text);
+  background: var(--accent-softer); padding: 3px 8px; border-radius: var(--radius-full);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.cf-edit-link:hover { background: var(--accent-soft); }
+
 /* Fila compacta para Inicio */
 .home-row {
   display: flex; align-items: center; gap: 10px;
@@ -535,9 +622,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 .modal {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
   width: 600px; max-width: 94vw; max-height: 86vh; overflow-y: auto;
-  background: var(--bg2); border: 1px solid var(--border);
+  background: var(--surface2); border: 1px solid var(--border2);
   border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
   padding: var(--space-6); animation: pop var(--dur) var(--ease);
+  z-index: 1;
 }
 .modal h2 { font-size: 20px; font-weight: 900; letter-spacing: -0.4px; margin-bottom: var(--space-4); }
 .modal .sec { margin-bottom: var(--space-6); }
