@@ -116,9 +116,34 @@ function applyTheme() {
   document.documentElement.dataset.theme = S.settings.theme || 'dark';
   document.documentElement.style.setProperty('--accent', S.settings.accent || '#E0314F');
 }
-async function setTheme(t) { await api('/api/setting', { key: 'theme', value: t }); await refresh(); if ($('#modal-layer').classList.contains('open')) openSettings(); }
-async function setAccent(c) { await api('/api/setting', { key: 'accent', value: c }); await refresh(); if ($('#modal-layer').classList.contains('open')) openSettings(); }
-function quickTheme() { setTheme((S.settings.theme || 'dark') === 'dark' ? 'light' : 'dark'); }
+async function setTheme(t) {
+  // Aplica visual primero (sin parpadeo), luego guarda en el servidor.
+  S.settings.theme = t;
+  applyTheme();
+  refreshSettingsActive();
+  await api('/api/setting', { key: 'theme', value: t });
+}
+async function setAccent(c) {
+  S.settings.accent = c;
+  applyTheme();
+  refreshSettingsActive();
+  await api('/api/setting', { key: 'accent', value: c });
+}
+function quickTheme() {
+  setTheme((S.settings.theme || 'dark') === 'dark' ? 'light' : 'dark');
+  renderSidebar(); // actualiza el icono sol/luna del footer
+}
+// Actualiza los marcadores "active" en el modal sin redibujar
+function refreshSettingsActive() {
+  const theme = S.settings.theme || 'dark';
+  const accent = (S.settings.accent || '#E0314F').toLowerCase();
+  document.querySelectorAll('.theme-card').forEach(el => {
+    el.classList.toggle('active', el.dataset.theme === theme);
+  });
+  document.querySelectorAll('.swatch').forEach(el => {
+    el.classList.toggle('active', (el.dataset.color || '').toLowerCase() === accent);
+  });
+}
 
 /* ---------------------------------------------------------- navegación */
 function nav(type, listId) {
@@ -146,6 +171,7 @@ function renderSidebar() {
   const name = S.settings.user_name || 'Yo';
   let html = `
     <div class="logo"><span class="dot"></span> Carmín</div>
+    <button class="create-btn" onclick="newTaskModal()">${I.plus} Crear tarea</button>
     <button class="nav-item ${route.type === 'inicio' ? 'active' : ''}" onclick="nav('inicio')">${I.home} Inicio</button>
     <button class="nav-item ${route.type === 'all' ? 'active' : ''}" onclick="nav('all')">${I.all} Todas las tareas</button>
     <button class="nav-item ${route.type === 'md' ? 'active' : ''}" onclick="nav('md')">${I.folder} Proyectos</button>
@@ -191,16 +217,19 @@ function renderTopbar() {
   const showTabs = route.type === 'list' || route.type === 'all';
   const tabIcons = { lista: I.list, tablero: I.board, calendario: I.cal };
   const tabNames = { lista: 'Lista', tablero: 'Tablero', calendario: 'Calendario' };
-  let html = `<div class="crumb">${crumb}</div>`;
+
+  let html = `<div class="topbar-row">
+    <div class="crumb">${crumb}</div>
+    <div class="top-spacer"></div>
+    ${showTabs ? `<div class="search">${I.search}<input placeholder="Buscar tareas…" value="${esc(q)}" oninput="searchInput(this)"></div>` : ''}
+    <button class="btn btn-primary" onclick="newTaskModal()">${I.plus} Crear tarea</button>
+  </div>`;
   if (showTabs) {
-    html += `<div class="tabs">` + tabsViews.map(v =>
-      `<button class="tab ${route.tab === v ? 'active' : ''}" onclick="setTab('${v}')">${tabIcons[v]} ${tabNames[v]}</button>`).join('') + `</div>`;
+    html += `<div class="topbar-row" style="min-height:auto">
+      <div class="tabs">` + tabsViews.map(v =>
+        `<button class="tab ${route.tab === v ? 'active' : ''}" onclick="setTab('${v}')">${tabIcons[v]} ${tabNames[v]}</button>`).join('') + `</div>
+    </div>`;
   }
-  html += `<div class="top-spacer"></div>`;
-  if (showTabs) {
-    html += `<div class="search">${I.search}<input placeholder="Buscar tareas…" value="${esc(q)}" oninput="searchInput(this)"></div>`;
-  }
-  html += `<button class="btn btn-primary" onclick="newTaskModal()">${I.plus} Nueva tarea</button>`;
   $('#topbar').innerHTML = html;
 }
 
@@ -213,11 +242,15 @@ function renderMain() {
 }
 
 /* ---------------------------------------------------------- piezas de tarea */
-function prioFlag(t) {
-  if (!t.priority) return '';
-  return `<span class="flag ${t.priority}" title="Prioridad: ${t.priority}">${I.flag}</span>`;
+function prioFlag(t, withLabel) {
+  if (!t.priority) return `<span class="flag empty" title="Sin prioridad">${I.flag}</span>`;
+  return `<span class="flag ${t.priority}" title="Prioridad: ${t.priority}">${I.flag}${withLabel ? ' ' + t.priority : ''}</span>`;
 }
-function dueChip(t) {
+function dueCell(t) {
+  if (!t.due) return `<span class="placeholder">— Vacío —</span>`;
+  return boardDueChip(t);
+}
+function boardDueChip(t) {
   if (!t.due) return '';
   const today = todayStr();
   const cls = isDone(t) ? '' : (t.due < today ? ' due-late' : (t.due === today ? ' due-today' : ''));
@@ -227,43 +260,89 @@ function dueChip(t) {
 function tagChips(t) { return t.tags.map(tg => `<span class="chip tag">${esc(tg)}</span>`).join(''); }
 function commentChip(t) {
   const n = commentsOf(t.id).length;
-  return n ? `<span class="chip comments">${I.comment}${n}</span>` : '';
+  return n ? `<span class="chip">${I.comment}${n}</span>` : '';
 }
 function listChip(t) {
   if (route.type === 'list') return '';
   const l = listById(t.list_id);
   return l ? `<span class="chip">${esc(l.name)}</span>` : '';
 }
+function statusDot(st) {
+  const kind = st.kind;
+  const cls = kind === 'done' ? 'full' : '';
+  return `<span class="status-dot ${cls}" style="color:${st.color}" title="${esc(st.name)}"></span>`;
+}
 
-function taskRow(t) {
+/* Fila compacta para Inicio (sin grid de columnas) */
+function homeTaskRow(t) {
   const st = statusById(t.status_id);
-  return `<div class="task-row ${isDone(t) ? 'done' : ''}" onclick="openTask(${t.id})">
-    <span class="status-dot" style="background:${st.color}" onclick="event.stopPropagation();statusMenu(event,${t.id})" title="${esc(st.name)}"></span>
-    <span class="task-title">${esc(t.title)}</span>
-    <span class="task-meta">${listChip(t)}${tagChips(t)}${commentChip(t)}${dueChip(t)}${prioFlag(t)}</span>
+  const l = listById(t.list_id);
+  return `<div class="home-row ${isDone(t) ? 'done' : ''}" onclick="openTask(${t.id})">
+    <span onclick="event.stopPropagation();statusMenu(event,${t.id})">${statusDot(st)}</span>
+    <span class="home-title">${esc(t.title)}</span>
+    <span class="home-meta">${l ? `<span class="chip">${esc(l.name)}</span>` : ''}${boardDueChip(t)}${prioFlag(t)}</span>
   </div>`;
 }
 
-/* ---------------------------------------------------------- vista: lista */
+/* ---------------------------------------------------------- vista: lista (tabla) */
 function viewList() {
   const ts = currentTasks();
-  let html = '';
+  if (!ts.length && q) { $('#main').innerHTML = emptyState('🔍', 'Nada coincide con tu búsqueda', 'Prueba con otras palabras'); return; }
+
+  // Mostrar columna "Lista" solo en vistas que mezclan listas (all)
+  const showListCol = route.type !== 'list';
+  let html = `<div class="list-table ${showListCol ? 'with-list' : ''}">
+    <div class="col-head-row">
+      <span></span>
+      <span>Nombre</span>
+      ${showListCol ? '<span>Lista</span>' : ''}
+      <span>Fecha límite</span>
+      <span>Prioridad</span>
+      <span>Estado</span>
+      <span class="center" title="Comentarios">${I.comment}</span>
+    </div>`;
   for (const st of statuses()) {
     const group = sortTasks(ts.filter(t => t.status_id === st.id));
     html += `<div class="group">
-      <div class="group-head"><span class="status-pill" style="background:${st.color}">${esc(st.name)}</span>
-      <span class="group-count">${group.length}</span></div>
-      ${group.map(taskRow).join('')}
-      ${quickAdd(st.id)}
+      <div class="group-bar" style="border-top-color:${st.color}">
+        <span class="pill" style="background:${st.color}">${esc(st.name)}</span>
+        <span class="group-count">${group.length}</span>
+        <span class="group-actions">
+          <button class="icon-btn" style="width:24px;height:24px" onclick="quickAddFocus(${st.id})" title="Añadir aquí">${I.plus}</button>
+        </span>
+      </div>
+      ${group.map(t => taskTableRow(t, showListCol)).join('')}
+      ${quickAddRow(st.id, showListCol)}
     </div>`;
   }
-  if (!ts.length && q) html = emptyState('🔍', 'Nada coincide con tu búsqueda', 'Prueba con otras palabras');
+  html += '</div>';
   $('#main').innerHTML = html;
 }
-function quickAdd(statusId) {
+
+function taskTableRow(t, showListCol) {
+  const st = statusById(t.status_id);
+  const l = listById(t.list_id);
+  const cmts = commentsOf(t.id).length;
+  return `<div class="task-row ${isDone(t) ? 'done' : ''}" onclick="openTask(${t.id})">
+    <span onclick="event.stopPropagation();statusMenu(event,${t.id})">${statusDot(st)}</span>
+    <span class="task-title">${esc(t.title)} <span class="tags">${tagChips(t)}</span></span>
+    ${showListCol ? `<span class="task-cell">${l ? esc(l.name) : ''}</span>` : ''}
+    <span class="task-cell">${dueCell(t)}</span>
+    <span class="task-cell" onclick="event.stopPropagation();prioMenu(event,${t.id})">${prioFlag(t, true)}</span>
+    <span class="task-cell"><span class="status-pill" style="background:${st.color}">${esc(st.name)}</span></span>
+    <span class="task-cell center">${cmts ? `<span class="chip">${I.comment}${cmts}</span>` : `<span class="placeholder">${I.comment}</span>`}</span>
+  </div>`;
+}
+
+function quickAddRow(statusId, showListCol) {
   const listId = route.type === 'list' ? route.listId : (S.spaces[0] && S.spaces[0].lists[0] ? S.spaces[0].lists[0].id : null);
   if (!listId) return '';
-  return `<div class="quick-add">${I.plus}<input placeholder="Nueva tarea…" onkeydown="qaKey(event,${listId},${statusId})"></div>`;
+  return `<div class="quick-add-row" data-status="${statusId}">${I.plus}
+    <input placeholder="+ Añadir tarea" onkeydown="qaKey(event,${listId},${statusId})"></div>`;
+}
+function quickAddFocus(statusId) {
+  const row = document.querySelector(`.quick-add-row[data-status="${statusId}"] input`);
+  if (row) row.focus();
 }
 async function qaKey(ev, listId, statusId) {
   if (ev.key !== 'Enter') return;
@@ -287,9 +366,9 @@ function viewBoard() {
       ${group.map(t => `
         <div class="card ${isDone(t) ? 'done' : ''}" draggable="true" ondragstart="dragStart(event,${t.id})" ondragend="dragEnd(event)" onclick="openTask(${t.id})">
           <div class="card-title">${esc(t.title)}</div>
-          <div class="card-meta">${listChip(t)}${tagChips(t)}${commentChip(t)}${dueChip(t)}${prioFlag(t)}</div>
+          <div class="card-meta">${listChip(t)}${tagChips(t)}${commentChip(t)}${boardDueChip(t)}${prioFlag(t)}</div>
         </div>`).join('')}
-      ${quickAdd(st.id)}
+      ${quickAddRow(st.id)}
     </div>`;
   }
   html += '</div>';
@@ -372,7 +451,7 @@ function viewInicio() {
   <div class="home-grid">
     <div class="panel-card">
       <h3><span class="left">⚡ Tu día</span></h3>
-      ${miDia.length ? miDia.slice(0, 8).map(taskRow).join('') : emptyState('🎉', 'Día despejado', 'Nada vencido ni urgente para hoy')}
+      ${miDia.length ? miDia.slice(0, 8).map(homeTaskRow).join('') : emptyState('🎉', 'Día despejado', 'Nada vencido ni urgente para hoy')}
     </div>
     <div>
       <div class="panel-card" style="margin-bottom:var(--space-6)">
@@ -735,7 +814,7 @@ function closeModal() {
 
 function openSettings() {
   const theme = S.settings.theme || 'dark';
-  const accent = S.settings.accent || '#E0314F';
+  const accent = (S.settings.accent || '#E0314F').toLowerCase();
   const views = enabledViews();
   showModal(`
     <h2>Ajustes</h2>
@@ -743,45 +822,61 @@ function openSettings() {
       <input type="text" value="${esc(S.settings.user_name || '')}" onchange="saveSetting('user_name',this.value)"></div>
     <div class="sec"><h4>Tema</h4>
       <div class="theme-cards">
-        <div class="theme-card ${theme === 'dark' ? 'active' : ''}" onclick="setTheme('dark')"><div class="preview dark"></div>Dark Crimson</div>
-        <div class="theme-card ${theme === 'light' ? 'active' : ''}" onclick="setTheme('light')"><div class="preview light"></div>Blanco</div>
+        <div class="theme-card ${theme === 'dark' ? 'active' : ''}" data-theme="dark" onclick="setTheme('dark')"><div class="preview dark"></div>Dark Crimson</div>
+        <div class="theme-card ${theme === 'light' ? 'active' : ''}" data-theme="light" onclick="setTheme('light')"><div class="preview light"></div>Blanco</div>
       </div></div>
     <div class="sec"><h4>Color de acento</h4>
       <div class="swatches">
-        ${SWATCHES.map(c => `<div class="swatch ${c.toLowerCase() === accent.toLowerCase() ? 'active' : ''}" style="background:${c}" onclick="setAccent('${c}')"></div>`).join('')}
+        ${SWATCHES.map(c => `<div class="swatch ${c.toLowerCase() === accent ? 'active' : ''}" data-color="${c}" style="background:${c}" onclick="setAccent('${c}')"></div>`).join('')}
       </div></div>
     <div class="sec"><h4>Vistas activas (estilo ClickUp: tú decides)</h4>
       ${['lista', 'tablero', 'calendario'].map(v => `
         <label class="check-row"><input type="checkbox" ${views.includes(v) ? 'checked' : ''} onchange="toggleView('${v}',this)">
         ${v[0].toUpperCase() + v.slice(1)}</label>`).join('')}
       <div class="faint" style="font-size:12px">Inicio y Proyectos siempre están disponibles.</div></div>
-    <div class="sec"><h4>Estados de tarea</h4>
-      ${statuses().map(st => `
-        <div class="status-edit-row">
-          <input type="color" value="${st.color}" onchange="saveStatus(${st.id},'color',this.value)">
-          <input type="text" value="${esc(st.name)}" onchange="saveStatus(${st.id},'name',this.value)">
-          <select onchange="saveStatus(${st.id},'kind',this.value)">
-            <option value="open" ${st.kind === 'open' ? 'selected' : ''}>Abierto</option>
-            <option value="active" ${st.kind === 'active' ? 'selected' : ''}>Activo</option>
-            <option value="done" ${st.kind === 'done' ? 'selected' : ''}>Hecho</option>
-          </select>
-          <button class="icon-btn" onclick="moveStatus(${st.id},-1)" title="Subir">↑</button>
-          <button class="icon-btn" onclick="moveStatus(${st.id},1)" title="Bajar">↓</button>
-          <button class="icon-btn btn-danger" onclick="deleteStatus(${st.id})">${I.trash}</button>
-        </div>`).join('')}
+    <div class="sec" id="status-edit-sec"><h4>Estados de tarea</h4>
+      ${renderStatusEditList()}
       <button class="btn btn-ghost" onclick="addStatus()" style="margin-top:6px">${I.plus} Nuevo estado</button></div>
-    <div class="sec"><h4>Carpetas vigiladas</h4>
-      ${S.folders.length ? S.folders.map(f => `
-        <div class="status-edit-row"><span style="flex:1;font-weight:500">${esc(f.name)} <span class="faint" style="font-size:12px">${esc(f.path)}</span></span>
-        <button class="icon-btn btn-danger" onclick="removeFolderSettings(${f.id})">${I.trash}</button></div>`).join('')
-      : '<div class="faint">Ninguna aún — agrégalas en la vista Proyectos.</div>'}
+    <div class="sec" id="folder-edit-sec"><h4>Carpetas vigiladas</h4>
+      ${renderFolderEditList()}
     </div>
     <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary" onclick="closeModal()">Listo</button></div>`);
 }
+
+function renderStatusEditList() {
+  return statuses().map(st => `
+    <div class="status-edit-row" data-id="${st.id}">
+      <input type="color" value="${st.color}" onchange="saveStatus(${st.id},'color',this.value)">
+      <input type="text" value="${esc(st.name)}" onchange="saveStatus(${st.id},'name',this.value)">
+      <select onchange="saveStatus(${st.id},'kind',this.value)">
+        <option value="open" ${st.kind === 'open' ? 'selected' : ''}>Abierto</option>
+        <option value="active" ${st.kind === 'active' ? 'selected' : ''}>Activo</option>
+        <option value="done" ${st.kind === 'done' ? 'selected' : ''}>Hecho</option>
+      </select>
+      <button class="icon-btn" onclick="moveStatus(${st.id},-1)" title="Subir">↑</button>
+      <button class="icon-btn" onclick="moveStatus(${st.id},1)" title="Bajar">↓</button>
+      <button class="icon-btn btn-danger" onclick="deleteStatus(${st.id})">${I.trash}</button>
+    </div>`).join('');
+}
+function renderFolderEditList() {
+  if (!S.folders.length) return '<div class="faint">Ninguna aún — agrégalas en la vista Proyectos.</div>';
+  return S.folders.map(f => `
+    <div class="status-edit-row"><span style="flex:1;font-weight:500">${esc(f.name)} <span class="faint" style="font-size:12px">${esc(f.path)}</span></span>
+    <button class="icon-btn btn-danger" onclick="removeFolderSettings(${f.id})">${I.trash}</button></div>`).join('');
+}
+function refreshStatusEditList() {
+  const sec = document.querySelector('#status-edit-sec');
+  if (!sec) return;
+  const wrap = document.createElement('div');
+  wrap.innerHTML = renderStatusEditList();
+  // Reemplaza solo las filas, no el botón "nuevo estado"
+  [...sec.querySelectorAll('.status-edit-row')].forEach(el => el.remove());
+  sec.querySelector('h4').insertAdjacentHTML('afterend', renderStatusEditList());
+}
 async function saveSetting(key, value) {
+  S.settings[key] = value;
   await api('/api/setting', { key, value });
-  await loadState();
-  render();
+  renderSidebar();
   toast('Guardado ✓');
 }
 async function toggleView(v, el) {
@@ -793,41 +888,63 @@ async function toggleView(v, el) {
   }
   const order = ['lista', 'tablero', 'calendario'];
   views.sort((a, b) => order.indexOf(a) - order.indexOf(b));
-  await api('/api/setting', { key: 'views', value: JSON.stringify(views) });
-  await loadState();
+  S.settings.views = JSON.stringify(views);
+  await api('/api/setting', { key: 'views', value: S.settings.views });
   if (!views.includes(route.tab)) route.tab = views[0];
-  render();
-  openSettings();
+  renderTopbar();
 }
 async function saveStatus(id, field, value) {
   await api('/api/status', { action: 'update', id, [field]: value });
-  await refresh();
-  openSettings();
+  await loadState();
+  renderMain();
+  // Actualiza solo las filas de estados en el modal, no todo
+  const sec = document.querySelector('#status-edit-sec');
+  if (sec) {
+    [...sec.querySelectorAll('.status-edit-row')].forEach(el => el.remove());
+    sec.querySelector('h4').insertAdjacentHTML('afterend', renderStatusEditList());
+  }
 }
 async function moveStatus(id, dir) {
   await api('/api/status', { action: 'move', id, dir });
-  await refresh();
-  openSettings();
+  await loadState();
+  renderMain();
+  const sec = document.querySelector('#status-edit-sec');
+  if (sec) {
+    [...sec.querySelectorAll('.status-edit-row')].forEach(el => el.remove());
+    sec.querySelector('h4').insertAdjacentHTML('afterend', renderStatusEditList());
+  }
 }
 async function deleteStatus(id) {
   const n = S.tasks.filter(t => t.status_id === id).length;
   if (!confirm(`¿Eliminar este estado?${n ? ' Sus ' + n + ' tareas pasarán al primer estado.' : ''}`)) return;
   try { await api('/api/status', { action: 'delete', id }); } catch (e) { return; }
-  await refresh();
-  openSettings();
+  await loadState();
+  renderMain();
+  const sec = document.querySelector('#status-edit-sec');
+  if (sec) {
+    [...sec.querySelectorAll('.status-edit-row')].forEach(el => el.remove());
+    sec.querySelector('h4').insertAdjacentHTML('afterend', renderStatusEditList());
+  }
 }
 async function addStatus() {
   const name = prompt('Nombre del nuevo estado:');
   if (!name || !name.trim()) return;
   await api('/api/status', { action: 'create', name: name.trim(), color: '#8B97A6', kind: 'open' });
-  await refresh();
-  openSettings();
+  await loadState();
+  renderMain();
+  const sec = document.querySelector('#status-edit-sec');
+  if (sec) {
+    [...sec.querySelectorAll('.status-edit-row')].forEach(el => el.remove());
+    sec.querySelector('h4').insertAdjacentHTML('afterend', renderStatusEditList());
+  }
 }
 async function removeFolderSettings(id) {
   await api('/api/folder', { action: 'delete', id });
   MDdata = null;
-  await refresh();
-  openSettings();
+  await loadState();
+  renderSidebar();
+  const sec = document.querySelector('#folder-edit-sec');
+  if (sec) sec.innerHTML = '<h4>Carpetas vigiladas</h4>' + renderFolderEditList();
 }
 
 /* ---------------------------------------------------------- arranque */
