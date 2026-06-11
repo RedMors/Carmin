@@ -312,7 +312,8 @@ function viewCalendar() {
   if (calY == null) { const d = new Date(); calY = d.getFullYear(); calM = d.getMonth(); }
   const first = new Date(calY, calM, 1);
   const start = (first.getDay() + 6) % 7; // lunes = 0
-  const title = first.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+  const titleRaw = first.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+  const title = titleRaw.charAt(0).toUpperCase() + titleRaw.slice(1);
   const ts = currentTasks().filter(t => t.due);
   const byDay = {};
   ts.forEach(t => (byDay[t.due] = byDay[t.due] || []).push(t));
@@ -351,7 +352,8 @@ function viewInicio() {
   const name = S.settings.user_name || '';
   const h = new Date().getHours();
   const saludo = h < 12 ? 'Buenos días' : h < 19 ? 'Buenas tardes' : 'Buenas noches';
-  const fecha = new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+  const fechaRaw = new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+  const fecha = fechaRaw.charAt(0).toUpperCase() + fechaRaw.slice(1);
   const today = todayStr();
   const open = S.tasks.filter(t => !isDone(t));
   const hoy = open.filter(t => t.due === today);
@@ -478,11 +480,11 @@ async function fillMDView() {
       <div class="badges">${gitBadges(f)}<span class="badge">${f.md_count} archivos .md</span></div>
       ${f.exists ? `
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-4)">
-          <div>
+          <div style="min-width:0">
             <div class="tp-section" style="margin-bottom:8px">Actualizado recientemente</div>
             ${f.recent.length ? f.recent.map(r => `<div class="file-row">${I.file}<span class="rel" title="${esc(r.rel)}">${esc(r.rel)}</span><span class="ago">${relTime(r.mtime)}</span></div>`).join('') : '<div class="faint">Sin archivos .md</div>'}
           </div>
-          <div>
+          <div style="min-width:0">
             <div class="tp-section" style="margin-bottom:8px">Pendientes encontrados (${f.todos.length})</div>
             ${f.todos.length ? f.todos.slice(0, 12).map((td, ti) => todoRow(fi, ti)).join('') : '<div class="faint">Sin checkboxes "- [ ]" pendientes ✓</div>'}
           </div>
