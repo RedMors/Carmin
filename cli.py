@@ -6,10 +6,13 @@ usuario sin entrar a la UI: consulta tareas, deja notas, cambia estados,
 crea cosas — todo desde la terminal.
 """
 
+import datetime
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -17,8 +20,12 @@ import webbrowser
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 HOST = "127.0.0.1"
-PORT = 4848
+# Permitir CARMIN_PORT por si el usuario corre la app en otro puerto.
+PORT = int(os.environ.get("CARMIN_PORT") or 4848)
 URL = f"http://{HOST}:{PORT}"
+
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+VALID_PRIOS = {"urgente", "alta", "normal", "baja", ""}
 
 C = {
     'reset': '\033[0m', 'dim': '\033[2m', 'bold': '\033[1m',
@@ -45,20 +52,38 @@ def _server_up():
 
 
 def _ensure_server():
-    """Si el servidor no está, lo arranca en background y espera a que responda."""
+    """Si el servidor no está, lo arranca en background y espera a que responda.
+
+    Si falla, lee el stderr capturado y lo muestra para que el usuario pueda
+    diagnosticar (puerto ocupado, DB corrupta, Python roto, etc.).
+    """
     if _server_up():
         return
     print(f"{C['dim']}Arrancando Carmín en background…{C['reset']}", file=sys.stderr)
+    log_path = os.path.join(tempfile.gettempdir(), f"carmin-{PORT}.log")
+    log_fh = open(log_path, "w")
     subprocess.Popen(
-        [sys.executable, os.path.join(BASE, "app.py"), "--no-browser"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        [sys.executable, os.path.join(BASE, "app.py"), "--no-browser", "--port", str(PORT)],
+        stdout=log_fh, stderr=subprocess.STDOUT,
         start_new_session=True,
     )
     for _ in range(40):
         time.sleep(0.15)
         if _server_up():
             return
-    _fail("No pude arrancar el servidor. Prueba `carmin open` y mira el error.")
+    # No arrancó: muestra el log para diagnóstico
+    try:
+        log_fh.flush()
+        with open(log_path) as f:
+            tail = f.read().strip()
+    except OSError:
+        tail = ""
+    msg = "No pude arrancar el servidor."
+    if tail:
+        msg += f" Esto es lo que dijo:\n\n{tail}"
+    else:
+        msg += f" Revisa el log en {log_path}."
+    _fail(msg)
 
 
 def _api(method, path, body=None):
@@ -128,6 +153,7 @@ def _find_status(s, query):
 
 
 def _find_list(s, query):
+    """Igual que _find_task: si hay varias coincidencias, las muestra y sale."""
     lists = [l for sp in s['spaces'] for l in sp['lists']]
     if not query:
         return lists[0] if lists else None
@@ -135,11 +161,21 @@ def _find_list(s, query):
         for l in lists:
             if l['id'] == int(query):
                 return l
+        _fail(f"No hay lista con ID {query}")
     q = str(query).lower()
+    # Match exacto primero — si "Mac" coincide exacto, no es ambiguo aunque haya "Mac local"
+    exact = [l for l in lists if q == l['name'].lower()]
+    if exact:
+        return exact[0]
     matches = [l for l in lists if q in l['name'].lower()]
     if not matches:
-        _fail(f"Lista no encontrada: '{query}'. Usa `carmin ls` para ver las disponibles.")
-    return matches[0]
+        _fail(f"Lista no encontrada: '{query}'. Usa `carmin proyectos` para ver las disponibles.")
+    if len(matches) == 1:
+        return matches[0]
+    print(f"{C['yellow']}!{C['reset']} '{query}' coincide con varias listas. Sé más específico o usa el ID:")
+    for l in matches[:10]:
+        print(f"  {l['id']:>4}  {l['name']}")
+    sys.exit(1)
 
 
 # ------------------------------------------------------------------ argumentos
@@ -207,17 +243,20 @@ def cmd_ls(args):
         tasks = [t for t in tasks if t['list_id'] == list_obj['id']]
 
     by_id = {st['id']: st for st in s['statuses']}
+    fallback_kind = 'open'  # si una tarea tiene status_id huérfano
+
+    def kind_of(t):
+        return by_id.get(t['status_id'], {}).get('kind', fallback_kind)
+
     if only_open:
-        tasks = [t for t in tasks if by_id[t['status_id']]['kind'] != 'done']
-    if today_only:
-        import datetime
+        tasks = [t for t in tasks if kind_of(t) != 'done']
+    if today_only or overdue:
         today = datetime.date.today().isoformat()
-        tasks = [t for t in tasks if t['due'] == today]
-    if overdue:
-        import datetime
-        today = datetime.date.today().isoformat()
-        tasks = [t for t in tasks
-                 if t['due'] and t['due'] < today and by_id[t['status_id']]['kind'] != 'done']
+        if today_only:
+            tasks = [t for t in tasks if t['due'] == today]
+        if overdue:
+            tasks = [t for t in tasks
+                     if t['due'] and t['due'] < today and kind_of(t) != 'done']
 
     if not tasks:
         print(f"{C['dim']}Sin tareas que coincidan.{C['reset']}")
@@ -225,12 +264,13 @@ def cmd_ls(args):
 
     lists_by_id = {l['id']: l for sp in s['spaces'] for l in sp['lists']}
     kind_color = {'open': C['dim'], 'active': C['blue'], 'done': C['green']}
+    unknown_status = {'name': '?', 'kind': fallback_kind}
     print(f"{C['bold']}{'ID':>4}  {'ESTADO':<13}  {'TAREA':<52}  {'LISTA':<14}  {'FECHA':<10}{C['reset']}")
     print(f"{C['dim']}{'─' * 4}  {'─' * 13}  {'─' * 52}  {'─' * 14}  {'─' * 10}{C['reset']}")
-    for t in sorted(tasks, key=lambda x: (by_id[x['status_id']]['kind'] == 'done', x['id'])):
-        st = by_id[t['status_id']]
+    for t in sorted(tasks, key=lambda x: (kind_of(x) == 'done', x['id'])):
+        st = by_id.get(t['status_id'], unknown_status)
         l = lists_by_id.get(t['list_id'])
-        st_str = f"{kind_color[st['kind']]}{st['name'][:13]:<13}{C['reset']}"
+        st_str = f"{kind_color.get(st['kind'], C['dim'])}{st['name'][:13]:<13}{C['reset']}"
         title = t['title'][:52]
         if st['kind'] == 'done':
             title = f"{C['dim']}{title}{C['reset']}"
@@ -281,6 +321,15 @@ def cmd_nueva(args):
 
     if isinstance(proj, list):
         proj = proj[0]
+
+    # Validar prioridad para evitar strings que la UI no sabe pintar.
+    if prio and prio not in VALID_PRIOS:
+        valid = ', '.join(p for p in VALID_PRIOS if p)
+        _fail(f"Prioridad inválida '{prio}'. Usa una de: {valid}")
+    # Validar fecha — la UI espera YYYY-MM-DD; otro formato rompe el chip silenciosamente.
+    if due and not DATE_RE.match(due):
+        _fail(f"Fecha inválida '{due}'. Formato esperado: YYYY-MM-DD (ej. 2026-06-15)")
+
     list_obj = _find_list(s, proj)
     if not list_obj:
         _fail("No hay listas todavía. Crea un espacio desde la app primero.")
@@ -337,13 +386,14 @@ def cmd_estados(_args):
 def cmd_proyectos(_args):
     _ensure_server()
     s = _state()
+    by_id = {st['id']: st for st in s['statuses']}
     print(f"{C['bold']}Espacios y listas:{C['reset']}")
     for sp in s['spaces']:
         print(f"  {sp.get('icon', '📁')} {C['bold']}{sp['name']}{C['reset']}")
         for l in sp['lists']:
             n_open = sum(1 for t in s['tasks']
                          if t['list_id'] == l['id']
-                         and next(st for st in s['statuses'] if st['id'] == t['status_id'])['kind'] != 'done')
+                         and by_id.get(t['status_id'], {}).get('kind') != 'done')
             print(f"      · {l['name']:<20} {C['dim']}{n_open} abiertas{C['reset']}")
 
 
