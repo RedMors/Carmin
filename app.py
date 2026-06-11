@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 BASE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(BASE, "static")
 DB_PATH = os.path.join(BASE, "data.db")
+CREDS_PATH = os.path.join(BASE, "credentials.json")
 HOST = "127.0.0.1"  # solo accesible desde esta Mac (compartir en red llegará después)
 DEFAULT_PORT = 4848
 
@@ -64,7 +65,17 @@ CREATE TABLE IF NOT EXISTS lists(
   space_id      INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
   name          TEXT NOT NULL,
   pos           INTEGER NOT NULL DEFAULT 0,
-  custom_fields TEXT NOT NULL DEFAULT '[]'  -- JSON: [{id,name,type,options?,width?}]
+  custom_fields TEXT NOT NULL DEFAULT '[]', -- JSON: [{id,name,type,options?,width?}]
+  source_id     INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+  source_path   TEXT NOT NULL DEFAULT '',   -- ej: "trip_posts?visibility=eq.public&limit=50"
+  source_mapping TEXT NOT NULL DEFAULT '{}' -- JSON: {title:'name', status:'stage', due:'closeDate'}
+);
+CREATE TABLE IF NOT EXISTS sources(
+  id          INTEGER PRIMARY KEY,
+  name        TEXT NOT NULL,             -- "Akatrek prod"
+  type        TEXT NOT NULL,             -- 'supabase' | 'http' | 'github'
+  config      TEXT NOT NULL DEFAULT '{}',-- JSON: {url, headers, cred_ref}
+  created_at  TEXT
 );
 CREATE TABLE IF NOT EXISTS tasks(
   id            INTEGER PRIMARY KEY,
@@ -100,6 +111,9 @@ CREATE TABLE IF NOT EXISTS folders(
 SOFT_MIGRATIONS = [
     "ALTER TABLE lists ADD COLUMN custom_fields TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE tasks ADD COLUMN custom_values TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE lists ADD COLUMN source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL",
+    "ALTER TABLE lists ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE lists ADD COLUMN source_mapping TEXT NOT NULL DEFAULT '{}'",
 ]
 
 
@@ -192,9 +206,18 @@ def get_state():
         for r in con.execute("SELECT * FROM lists ORDER BY pos,id"):
             d = dict(r)
             d["custom_fields"] = _json_or(d.get("custom_fields"), [])
+            d["source_mapping"] = _json_or(d.get("source_mapping"), {})
             lists.append(d)
         for s in spaces:
             s["lists"] = [l for l in lists if l["space_id"] == s["id"]]
+        sources_list = []
+        for r in con.execute("SELECT * FROM sources ORDER BY id"):
+            d = dict(r)
+            cfg = _json_or(d.get("config"), {})
+            # NO enviamos al cliente las llaves reales — solo el cred_ref (nombre)
+            cfg.pop("__resolved_headers__", None)
+            d["config"] = cfg
+            sources_list.append(d)
         tasks = []
         for r in con.execute("SELECT * FROM tasks ORDER BY id"):
             d = dict(r)
@@ -206,6 +229,7 @@ def get_state():
         return {
             "settings": settings, "statuses": statuses, "spaces": spaces,
             "tasks": tasks, "comments": comments, "folders": folders,
+            "sources": sources_list,
         }
     finally:
         con.close()
@@ -296,6 +320,151 @@ def get_md_overview():
     return {"folders": out, "scanned_at": now()}
 
 
+# ---------------------------------------------------------------- conectores externos
+
+def _load_creds():
+    """Lee ~/carmin/credentials.json. Vacío si no existe. Nunca se sube al cliente."""
+    try:
+        with open(CREDS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_creds(creds):
+    with open(CREDS_PATH, "w", encoding="utf-8") as f:
+        json.dump(creds, f, indent=2)
+    try:
+        os.chmod(CREDS_PATH, 0o600)  # solo dueño puede leer
+    except OSError:
+        pass
+
+
+def _expand_vars(s, creds_for_ref):
+    """Reemplaza ${KEY} con el valor de creds_for_ref[KEY]. Si no existe, deja la marca."""
+    if not isinstance(s, str):
+        return s
+    out = s
+    for k, v in (creds_for_ref or {}).items():
+        out = out.replace("${" + k + "}", str(v))
+    return out
+
+
+def _fetch_source(source, path, max_rows=100):
+    """Hace la request HTTP a la fuente externa. Devuelve lista de dicts.
+
+    source.config debe tener:
+      - url (base)        ej. "https://xxx.supabase.co/rest/v1"
+      - headers (dict)    ej. {"apikey":"${anon_key}","Authorization":"Bearer ${anon_key}"}
+      - cred_ref (str)    nombre del bloque en credentials.json
+    path es el sufijo: "trip_posts?visibility=eq.public&limit=20"
+    """
+    import urllib.request
+    import urllib.error
+    cfg = source["config"] if isinstance(source.get("config"), dict) else _json_or(source.get("config"), {})
+    cred_ref = cfg.get("cred_ref") or ""
+    creds = _load_creds().get(cred_ref, {}) if cred_ref else {}
+    base = _expand_vars(cfg.get("url") or "", creds)
+    headers = {k: _expand_vars(v, creds) for k, v in (cfg.get("headers") or {}).items()}
+    if not base:
+        raise ApiError("La fuente no tiene URL configurada")
+    if source["type"] == "supabase":
+        # Defaults útiles para Supabase REST
+        headers.setdefault("Accept", "application/json")
+        # Forzar límite si el path no lo trae
+        if "limit=" not in (path or ""):
+            sep = "&" if "?" in (path or "") else "?"
+            path = (path or "") + f"{sep}limit={max_rows}"
+    sep = "" if base.endswith("/") or (path or "").startswith("/") else "/"
+    url = base + sep + (path or "")
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            raw = r.read()
+            data = json.loads(raw) if raw else []
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read() or b"{}")
+            txt = msg.get("message") or msg.get("error") or f"HTTP {e.code}"
+        except Exception:
+            txt = f"HTTP {e.code}"
+        raise ApiError(f"La fuente respondió error: {txt}")
+    except urllib.error.URLError as e:
+        raise ApiError(f"No pude conectar a la fuente: {getattr(e, 'reason', e)}")
+    if not isinstance(data, list):
+        # Algunas APIs devuelven {data: [...]} o {items: [...]}
+        for k in ("data", "items", "results", "rows"):
+            if isinstance(data, dict) and isinstance(data.get(k), list):
+                data = data[k]
+                break
+        else:
+            data = []
+    return data[:max_rows]
+
+
+def _apply_mapping(rows, mapping):
+    """Aplica el mapeo de campos a cada fila. mapping = {'title': 'name', ...}.
+    Devuelve filas con keys estandarizadas: title, status, due, descr, url, tags.
+    """
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        item = {"_raw": r}
+        for ours, theirs in (mapping or {}).items():
+            if not isinstance(theirs, str):
+                continue
+            # Soporte de path con puntos: "author.name"
+            val = r
+            for part in theirs.split("."):
+                if isinstance(val, dict) and part in val:
+                    val = val[part]
+                else:
+                    val = None
+                    break
+            item[ours] = val
+        # Fallback: si no se mapeó title, intentar campos comunes
+        if not item.get("title"):
+            for k in ("title", "name", "subject", "heading"):
+                if isinstance(r.get(k), str):
+                    item["title"] = r[k]
+                    break
+        out.append(item)
+    return out
+
+
+def get_source_rows(list_id):
+    """Lee la lista y trae sus tareas remotas mapeadas (read-only)."""
+    con = db()
+    try:
+        row = con.execute("""
+            SELECT l.id, l.name, l.source_id, l.source_path, l.source_mapping,
+                   s.type AS source_type, s.name AS source_name, s.config AS source_config
+            FROM lists l LEFT JOIN sources s ON s.id = l.source_id
+            WHERE l.id=?
+        """, (list_id,)).fetchone()
+    finally:
+        con.close()
+    if not row or not row["source_id"]:
+        raise ApiError("Esa lista no está conectada a una fuente")
+    source = {
+        "id": row["source_id"],
+        "type": row["source_type"],
+        "name": row["source_name"],
+        "config": _json_or(row["source_config"], {}),
+    }
+    mapping = _json_or(row["source_mapping"], {})
+    rows = _fetch_source(source, row["source_path"] or "")
+    return {
+        "list_id": list_id,
+        "list_name": row["name"],
+        "source_name": source["name"],
+        "source_type": source["type"],
+        "rows": _apply_mapping(rows, mapping),
+        "fetched_at": now(),
+    }
+
+
 # ---------------------------------------------------------------- API de escritura
 
 class ApiError(Exception):
@@ -342,6 +511,10 @@ def api_post(path, b):
                             " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                             (str(b.get("key", "")), str(b.get("value", ""))))
                 return {"ok": True}
+            if path == "/api/source":
+                return _source(con, action, b)
+            if path == "/api/creds":
+                return _creds(action, b)
             raise ApiError("Ruta desconocida: %s" % path)
     finally:
         con.close()
@@ -589,6 +762,84 @@ def _folder(con, action, b):
     raise ApiError("Acción desconocida")
 
 
+VALID_SOURCE_TYPES = {"supabase", "http", "github"}
+
+
+def _source(con, action, b):
+    if action == "create":
+        name = str(b.get("name", "")).strip()
+        if not name:
+            raise ApiError("La fuente necesita un nombre")
+        stype = str(b.get("type", "")).strip().lower()
+        if stype not in VALID_SOURCE_TYPES:
+            raise ApiError(f"Tipo de fuente inválido: {stype}")
+        cfg = b.get("config") or {}
+        if not isinstance(cfg, dict):
+            raise ApiError("config debe ser un objeto")
+        con.execute(
+            "INSERT INTO sources(name,type,config,created_at) VALUES(?,?,?,?)",
+            (name[:60], stype, json.dumps(cfg), now()),
+        )
+        return {"ok": True, "id": con.execute("SELECT last_insert_rowid() i").fetchone()["i"]}
+    if action == "update":
+        sets, vals = [], []
+        if "name" in b:
+            sets.append("name=?"); vals.append(str(b["name"]).strip()[:60])
+        if "config" in b:
+            cfg = b["config"]
+            if not isinstance(cfg, dict):
+                raise ApiError("config debe ser un objeto")
+            sets.append("config=?"); vals.append(json.dumps(cfg))
+        if not sets:
+            return {"ok": True}
+        vals.append(b.get("id"))
+        con.execute("UPDATE sources SET " + ",".join(sets) + " WHERE id=?", vals)
+        return {"ok": True}
+    if action == "delete":
+        con.execute("DELETE FROM sources WHERE id=?", (b.get("id"),))
+        return {"ok": True}
+    if action == "connect_list":
+        # Conecta una lista existente a una fuente.
+        list_id = b.get("list_id")
+        source_id = b.get("source_id")
+        if not con.execute("SELECT 1 FROM lists WHERE id=?", (list_id,)).fetchone():
+            raise ApiError("Esa lista no existe")
+        if source_id and not con.execute("SELECT 1 FROM sources WHERE id=?", (source_id,)).fetchone():
+            raise ApiError("Esa fuente no existe")
+        mapping = b.get("mapping") or {}
+        con.execute(
+            "UPDATE lists SET source_id=?, source_path=?, source_mapping=? WHERE id=?",
+            (source_id or None, str(b.get("path", ""))[:500], json.dumps(mapping), list_id),
+        )
+        return {"ok": True}
+    raise ApiError("Acción desconocida")
+
+
+def _creds(action, b):
+    """Gestión de credenciales locales. NUNCA devuelven los valores reales al cliente,
+    solo los nombres (cred_ref) y qué claves tiene cada uno."""
+    creds = _load_creds()
+    if action == "list":
+        return {"creds": {ref: list(vals.keys()) for ref, vals in creds.items()}}
+    if action == "set":
+        ref = str(b.get("ref", "")).strip()
+        values = b.get("values") or {}
+        if not ref or not re.match(r"^[a-zA-Z0-9_]+$", ref):
+            raise ApiError("ref inválido (usa solo letras, números y guión bajo)")
+        if not isinstance(values, dict):
+            raise ApiError("values debe ser un objeto")
+        creds[ref] = {str(k): str(v) for k, v in values.items() if v}
+        _save_creds(creds)
+        return {"ok": True}
+    if action == "delete":
+        ref = str(b.get("ref", "")).strip()
+        if ref in creds:
+            del creds[ref]
+            _save_creds(creds)
+        return {"ok": True}
+    raise ApiError("Acción desconocida")
+
+
 # ---------------------------------------------------------------- servidor HTTP
 
 MIME = {
@@ -633,6 +884,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, get_state())
             if p == "/api/md":
                 return self._send(200, get_md_overview())
+            if p == "/api/source/fetch":
+                from urllib.parse import parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                list_id_raw = (qs.get("list_id") or [""])[0]
+                if not list_id_raw.isdigit():
+                    return self._send(400, {"error": "list_id requerido"})
+                try:
+                    return self._send(200, get_source_rows(int(list_id_raw)))
+                except ApiError as e:
+                    return self._send(400, {"error": str(e)})
+            if p == "/api/creds":
+                # Listar refs (sin valores) — útil para la UI
+                return self._send(200, _creds("list", {}))
             self._send(404, {"error": "no encontrado"})
         except BrokenPipeError:
             pass
