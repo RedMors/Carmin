@@ -351,9 +351,59 @@ function openSourceRow(listId, idx) {
     </div>`);
 }
 
-async function editSourceConnection(listId) {
-  if (!confirm('¿Desconectar esta lista de la fuente externa? Vuelve a ser una lista local vacía.')) return;
+function editSourceConnection(listId) {
+  const l = listById(listId);
+  if (!l || !l.source_id) { toast('Esta lista no está conectada', 'err'); return; }
+  const source = (S.sources || []).find(s => s.id === l.source_id);
+  const mapping = l.source_mapping || {};
+  showModal(`
+    <h2>Editar conexión</h2>
+    <div class="faint" style="font-size:13px;margin-bottom:var(--space-4)">
+      Lista <strong>${esc(l.name)}</strong> conectada a <strong>${esc(source ? source.name : '?')}</strong> (${esc(source ? source.type : '?')}).
+      Cambia el query o el mapeo sin perder la conexión.
+    </div>
+    <div class="sec">
+      <h4>Query / Path</h4>
+      <input type="text" id="es-path" value="${esc(l.source_path || '')}">
+      <div class="faint" style="font-size:12px;margin-top:4px">${source && source.type === 'supabase' ? 'Sintaxis PostgREST. Ej: <code>trip_posts?visibility=eq.public&limit=20</code>' : 'Path adicional o query string.'}</div>
+    </div>
+    <div class="sec">
+      <h4>Mapeo de campos</h4>
+      <div style="display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center">
+        <span class="faint" style="font-size:12px">Título</span>
+        <input type="text" id="es-map-title" value="${esc(mapping.title || 'title')}">
+        <span class="faint" style="font-size:12px">Estado</span>
+        <input type="text" id="es-map-status" value="${esc(mapping.status || 'status')}">
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-danger" onclick="disconnectSource(${listId})" title="Quitar la conexión, dejar lista vacía">${I.x} Desconectar</button>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-soft" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="saveSourceEdit(${listId})">Guardar cambios</button>
+      </div>
+    </div>`);
+}
+
+async function saveSourceEdit(listId) {
+  const path = $('#es-path').value.trim();
+  const mapping = {
+    title: $('#es-map-title').value.trim() || 'title',
+    status: $('#es-map-status').value.trim() || 'status',
+  };
+  const l = listById(listId);
+  if (!l) return;
+  await api('/api/source', { action: 'connect_list', list_id: listId, source_id: l.source_id, path, mapping });
+  closeModal();
+  delete _srcCache[listId];
+  toast('Conexión actualizada ✓');
+  await refresh();
+}
+
+async function disconnectSource(listId) {
+  if (!confirm('¿Desconectar? La fuente queda guardada pero esta lista vuelve a ser local vacía.')) return;
   await api('/api/source', { action: 'connect_list', list_id: listId, source_id: null, path: '', mapping: {} });
+  closeModal();
   delete _srcCache[listId];
   toast('Lista desconectada');
   await refresh();
