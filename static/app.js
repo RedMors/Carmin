@@ -1085,7 +1085,13 @@ function emptyState(icon, title, hint) {
 
 /* ---------------------------------------------------------- panel de tarea */
 function openTask(id) { openTaskId = id; renderPanel(); }
-function closeTask() { openTaskId = null; $('#panel-layer').classList.remove('open'); $('#panel-layer').innerHTML = ''; }
+function closeTask() {
+  openTaskId = null;
+  const layer = $('#panel-layer');
+  if (!layer.classList.contains('open')) { layer.innerHTML = ''; return; }
+  layer.classList.remove('open');  // el scrim hace fade-out
+  setTimeout(() => { if (!layer.classList.contains('open')) layer.innerHTML = ''; }, 200);
+}
 
 function renderPanel() {
   const t = taskById(openTaskId);
@@ -1095,10 +1101,10 @@ function renderPanel() {
   const lists = [];
   for (const sp of S.spaces) for (const l of sp.lists) lists.push({ ...l, space: sp.name });
   const layer = $('#panel-layer');
-  layer.classList.add('open');
+  const wasOpen = layer.classList.contains('open'); // re-render por edición → no re-animar
   layer.innerHTML = `
     <div class="panel-scrim" onclick="closeTask()"></div>
-    <div class="task-panel">
+    <div class="task-panel ${wasOpen ? '' : 'panel-anim'}">
       <div class="tp-head">
         <button class="status-pill" style="background:${st.color};border:none;cursor:pointer" onclick="statusMenu(event,${t.id})">${esc(st.name)}</button>
         <span class="spacer"></span>
@@ -1146,6 +1152,7 @@ function renderPanel() {
         ${t.done_at ? `<span>✓ Completada ${esc(t.done_at.slice(0, 10))}</span>` : ''}
       </div>
     </div>`;
+  if (!wasOpen) { void layer.offsetHeight; layer.classList.add('open'); } // scrim fade-in solo al abrir
   const ta = layer.querySelector('.tp-title');
   ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
 }
@@ -1600,13 +1607,18 @@ async function createFromModal() {
 /* ---------------------------------------------------------- modal genérico + ajustes */
 function showModal(inner) {
   const layer = $('#modal-layer');
-  layer.classList.add('open');
+  // innerHTML PRIMERO (scrim nace en opacity:0), forzar reflow, luego .open
+  // para que la transición de opacidad del scrim sí corra (antes aparecía de golpe).
   layer.innerHTML = `<div class="scrim" onclick="closeModal()"></div><div class="modal">${inner}</div>`;
+  void layer.offsetHeight; // reflow
+  layer.classList.add('open');
 }
 function closeModal() {
   const layer = $('#modal-layer');
+  if (!layer.classList.contains('open')) { layer.innerHTML = ''; return; }
   layer.classList.remove('open');
-  layer.innerHTML = '';
+  // Esperar a que el scrim se desvanezca antes de limpiar el DOM (salida suave).
+  setTimeout(() => { if (!layer.classList.contains('open')) layer.innerHTML = ''; }, 200);
 }
 
 /* ---------------------------------------------------------- editor de columnas custom */
