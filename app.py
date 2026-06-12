@@ -26,6 +26,8 @@ HOST = "127.0.0.1"  # solo accesible desde esta Mac (compartir en red llegará d
 DEFAULT_PORT = 4848
 
 # Carpetas que nunca se escanean al buscar archivos .md
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 EXCLUDE_DIRS = {
     "node_modules", ".git", ".next", "dist", "build", "__pycache__",
     ".vercel", ".turbo", "coverage", ".cache", "vendor", ".expo", ".DS_Store",
@@ -104,6 +106,20 @@ CREATE TABLE IF NOT EXISTS folders(
   id   INTEGER PRIMARY KEY,
   name TEXT,
   path TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS goals(
+  id         INTEGER PRIMARY KEY,
+  space_id   INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  kind       TEXT NOT NULL DEFAULT 'number',  -- number | currency | percent
+  target     REAL NOT NULL DEFAULT 0,
+  current    REAL NOT NULL DEFAULT 0,
+  unit       TEXT NOT NULL DEFAULT '',         -- 'usuarios', 'reservas', etc
+  deadline   TEXT NOT NULL DEFAULT '',         -- YYYY-MM-DD
+  notes      TEXT NOT NULL DEFAULT '',
+  pos        INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT
 );
 """
 
@@ -228,10 +244,11 @@ def get_state():
             tasks.append(d)
         comments = [dict(r) for r in con.execute("SELECT * FROM comments ORDER BY id")]
         folders = [dict(r) for r in con.execute("SELECT * FROM folders ORDER BY id")]
+        goals = [dict(r) for r in con.execute("SELECT * FROM goals ORDER BY pos,id")]
         return {
             "settings": settings, "statuses": statuses, "spaces": spaces,
             "tasks": tasks, "comments": comments, "folders": folders,
-            "sources": sources_list,
+            "sources": sources_list, "goals": goals,
         }
     finally:
         con.close()
@@ -528,6 +545,8 @@ def api_post(path, b):
                 return {"ok": True}
             if path == "/api/source":
                 return _source(con, action, b)
+            if path == "/api/goal":
+                return _goal(con, action, b)
             if path == "/api/creds":
                 return _creds(action, b)
             raise ApiError("Ruta desconocida: %s" % path)
@@ -773,6 +792,75 @@ def _folder(con, action, b):
         return {"ok": True}
     if action == "delete":
         con.execute("DELETE FROM folders WHERE id=?", (b.get("id"),))
+        return {"ok": True}
+    raise ApiError("Acción desconocida")
+
+
+VALID_GOAL_KINDS = {"number", "currency", "percent"}
+
+
+def _goal(con, action, b):
+    if action == "create":
+        name = str(b.get("name", "")).strip()
+        if not name:
+            raise ApiError("La meta necesita un nombre")
+        space_id = b.get("space_id")
+        if not con.execute("SELECT 1 FROM spaces WHERE id=?", (space_id,)).fetchone():
+            raise ApiError("Ese espacio no existe")
+        kind = str(b.get("kind", "number")).lower()
+        if kind not in VALID_GOAL_KINDS:
+            kind = "number"
+        try:
+            target = float(b.get("target") or 0)
+            current = float(b.get("current") or 0)
+        except (TypeError, ValueError):
+            raise ApiError("target y current deben ser números")
+        due = str(b.get("deadline", ""))
+        if due and not DATE_RE.match(due):
+            raise ApiError("deadline inválido (formato YYYY-MM-DD)")
+        pos = con.execute("SELECT COALESCE(MAX(pos)+1,0) p FROM goals WHERE space_id=?",
+                          (space_id,)).fetchone()["p"]
+        t = now()
+        con.execute(
+            "INSERT INTO goals(space_id,name,kind,target,current,unit,deadline,notes,pos,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (space_id, name[:80], kind, target, current,
+             str(b.get("unit", ""))[:20], due, str(b.get("notes", ""))[:500], pos, t, t))
+        return {"ok": True, "id": con.execute("SELECT last_insert_rowid() i").fetchone()["i"]}
+
+    gid = b.get("id")
+    row = con.execute("SELECT * FROM goals WHERE id=?", (gid,)).fetchone()
+    if not row:
+        raise ApiError("Esa meta ya no existe")
+
+    if action == "update":
+        sets, vals = ["updated_at=?"], [now()]
+        for k in ("name", "kind", "unit", "notes", "deadline"):
+            if k in b:
+                v = str(b[k])
+                if k == "name":
+                    v = v.strip()[:80]
+                    if not v:
+                        raise ApiError("La meta necesita un nombre")
+                if k == "kind" and v.lower() not in VALID_GOAL_KINDS:
+                    continue
+                if k == "deadline" and v and not DATE_RE.match(v):
+                    raise ApiError("deadline inválido (YYYY-MM-DD)")
+                sets.append("%s=?" % k)
+                vals.append(v[:500] if k == "notes" else v)
+        for k in ("target", "current"):
+            if k in b:
+                try:
+                    sets.append("%s=?" % k)
+                    vals.append(float(b[k]))
+                except (TypeError, ValueError):
+                    raise ApiError(f"{k} debe ser un número")
+        vals.append(gid)
+        con.execute("UPDATE goals SET %s WHERE id=?" % ",".join(sets), vals)
+        return {"ok": True}
+
+    if action == "delete":
+        con.execute("DELETE FROM goals WHERE id=?", (gid,))
         return {"ok": True}
     raise ApiError("Acción desconocida")
 

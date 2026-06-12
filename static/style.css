@@ -450,6 +450,54 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 }
 .cf-edit-link:hover { background: var(--accent-soft); }
 
+/* ---------------------------------------------------------- panel de metas */
+.panel-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--space-4); margin-bottom: var(--space-6);
+}
+.goals-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: var(--space-4);
+}
+.goal-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: var(--space-4);
+  cursor: pointer; transition: all var(--dur-fast) var(--ease);
+  animation: fadeUp var(--dur) var(--ease);
+}
+.goal-card:hover { border-color: var(--border2); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.goal-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: var(--space-3); }
+.goal-name { font-weight: 800; font-size: 15px; letter-spacing: -0.2px; line-height: 1.3; }
+.goal-status {
+  flex: none; font-size: 10.5px; font-weight: 800; letter-spacing: .3px;
+  padding: 3px 9px; border-radius: var(--radius-full); white-space: nowrap;
+}
+.goal-numbers { display: flex; align-items: baseline; gap: 6px; margin-bottom: 10px; }
+.goal-current { font-size: 26px; font-weight: 900; letter-spacing: -1px; }
+.goal-target { font-size: 14px; color: var(--muted); font-weight: 600; }
+.goal-bar {
+  height: 8px; border-radius: var(--radius-full);
+  background: var(--surface2); overflow: hidden; margin-bottom: 8px;
+}
+.goal-bar-fill {
+  height: 100%; border-radius: var(--radius-full);
+  transition: width var(--dur) var(--ease);
+}
+.goal-foot { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; }
+.goal-notes {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+  font-size: 12.5px; line-height: 1.4;
+}
+
+/* mini-metas en Inicio */
+.home-goal { padding: 8px 0; }
+.home-goal + .home-goal { border-top: 1px solid var(--border); }
+.home-goal-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.home-goal-name { font-weight: 700; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-goal-val { font-size: 12px; font-weight: 700; flex: none; }
+.home-goal-bar { height: 6px; border-radius: var(--radius-full); background: var(--surface2); overflow: hidden; }
+.home-goal-bar-fill { height: 100%; border-radius: var(--radius-full); transition: width var(--dur) var(--ease); }
+
 /* ---------------------------------------------------------- fuentes externas */
 .src-banner {
   display: flex; align-items: center; gap: 10px;

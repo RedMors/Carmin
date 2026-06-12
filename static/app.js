@@ -22,6 +22,7 @@ const I = {
   moon: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"/></svg>',
   dots: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
   refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>',
+  chart: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6"/><rect x="13" y="7" width="3" height="10"/></svg>',
   edit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
 };
 
@@ -210,6 +211,10 @@ function renderTopbar() {
   if (route.type === 'inicio') crumb = 'Inicio';
   else if (route.type === 'all') crumb = 'Todas las tareas';
   else if (route.type === 'md') crumb = 'Proyectos';
+  else if (route.type === 'space-panel') {
+    const sp = S.spaces.find(s => s.id === route.spaceId);
+    crumb = sp ? `${esc(sp.icon || '📁')} ${esc(sp.name)} <span class="sep">/</span> Panel` : 'Panel';
+  }
   else if (route.type === 'list') {
     const l = listById(route.listId), sp = l && spaceOfList(l.id);
     crumb = l && sp
@@ -221,8 +226,8 @@ function renderTopbar() {
   // no aplican: los datos son read-only y tienen su propia vista. Ocultamos los tabs.
   const isConnected = route.type === 'list' && listById(route.listId)?.source_id;
   const showTabs = (route.type === 'list' || route.type === 'all') && !isConnected;
-  const tabIcons = { lista: I.list, tablero: I.board, calendario: I.cal, tabla: I.all };
-  const tabNames = { lista: 'Lista', tablero: 'Tablero', calendario: 'Calendario', tabla: 'Tabla' };
+  const tabIcons = { lista: I.list, tablero: I.board, calendario: I.cal, tabla: I.all, panel: I.chart };
+  const tabNames = { lista: 'Lista', tablero: 'Tablero', calendario: 'Calendario', tabla: 'Tabla', panel: 'Panel' };
 
   let html = `<div class="topbar-row">
     <div class="crumb">${crumb}</div>
@@ -244,6 +249,7 @@ function renderTopbar() {
 
 function renderMain() {
   if (route.type === 'inicio') return viewInicio();
+  if (route.type === 'space-panel') return viewPanel();
   if (route.type === 'md') return viewMD();
   // Lista conectada a fuente externa → render distinto, read-only.
   if (route.type === 'list') {
@@ -253,7 +259,186 @@ function renderMain() {
   if (route.tab === 'tablero') return viewBoard();
   if (route.tab === 'calendario') return viewCalendar();
   if (route.tab === 'tabla') return viewTable();
+  if (route.tab === 'panel') return viewPanel();
   return viewList();
+}
+
+/* ---------------------------------------------------------- metas (goals) */
+function goalsForRoute() {
+  const all = S.goals || [];
+  if (route.type === 'space-panel') return all.filter(g => g.space_id === route.spaceId);
+  if (route.type === 'list') {
+    const sp = spaceOfList(route.listId);
+    return sp ? all.filter(g => g.space_id === sp.id) : [];
+  }
+  return all; // vista "all" → todas
+}
+function panelSpace() {
+  if (route.type === 'space-panel') return S.spaces.find(s => s.id === route.spaceId);
+  if (route.type === 'list') return spaceOfList(route.listId);
+  return null;
+}
+function fmtGoalValue(v, kind, unit) {
+  if (kind === 'currency') return '$' + Number(v).toLocaleString('es-ES', { maximumFractionDigits: 0 });
+  if (kind === 'percent') return (+v) + '%';
+  const n = Number(v);
+  const s = Number.isInteger(n) ? n.toLocaleString('es-ES') : n.toLocaleString('es-ES', { maximumFractionDigits: 2 });
+  return unit ? `${s} ${unit}` : s;
+}
+function goalStatus(g) {
+  const pct = g.target ? (g.current / g.target * 100) : 0;
+  if (pct >= 100) return { key: 'done', label: '✓ Cumplida', color: '#34C77B', pct: 100 };
+  const today = todayStr();
+  if (g.deadline) {
+    if (g.deadline < today) return { key: 'overdue', label: 'Vencida', color: '#E5484D', pct };
+    // progreso esperado según tiempo transcurrido
+    const created = (g.created_at || '').slice(0, 10) || today;
+    const totalDays = daysBetween(created, g.deadline);
+    const elapsed = daysBetween(created, today);
+    const expectedPct = totalDays > 0 ? Math.min(100, elapsed / totalDays * 100) : 0;
+    if (pct >= expectedPct - 5) return { key: 'ontrack', label: 'En camino', color: '#34C77B', pct };
+    return { key: 'behind', label: 'Atrasada', color: '#F5A524', pct };
+  }
+  return { key: 'progress', label: 'En progreso', color: '#4E9CF5', pct };
+}
+function daysBetween(a, b) {
+  const da = new Date(a + 'T00:00:00'), db = new Date(b + 'T00:00:00');
+  return Math.max(0, Math.round((db - da) / 86400000));
+}
+
+function viewPanel() {
+  const goals = goalsForRoute();
+  const sp = panelSpace();
+  let html = `<div class="panel-head">
+    <div>
+      <div class="view-title">Panel${sp ? ' · ' + esc(sp.name) : ''}</div>
+      <div class="view-sub">Las metas de tu proyecto y qué tan cerca estás de cada una.</div>
+    </div>
+    <button class="btn btn-primary" onclick="newGoalModal(${sp ? sp.id : 'null'})">${I.plus} Nueva meta</button>
+  </div>`;
+  if (!goals.length) {
+    html += emptyState('🎯', 'Aún no hay metas en este proyecto',
+      'Define una: revenue, usuarios, reservas, lo que estés persiguiendo. Claude puede actualizarlas mientras trabajan.');
+    $('#main').innerHTML = html;
+    return;
+  }
+  html += '<div class="goals-grid">';
+  for (const g of goals) {
+    const st = goalStatus(g);
+    const pctShown = Math.round(st.pct);
+    html += `<div class="goal-card" onclick="editGoalModal(${g.id})">
+      <div class="goal-top">
+        <div class="goal-name">${esc(g.name)}</div>
+        <span class="goal-status" style="background:color-mix(in srgb, ${st.color} 16%, transparent);color:${st.color}">${st.label}</span>
+      </div>
+      <div class="goal-numbers">
+        <span class="goal-current" style="color:${st.color}">${esc(fmtGoalValue(g.current, g.kind, g.unit))}</span>
+        <span class="goal-target">/ ${esc(fmtGoalValue(g.target, g.kind, g.unit))}</span>
+      </div>
+      <div class="goal-bar"><div class="goal-bar-fill" style="width:${Math.min(100, st.pct)}%;background:${st.color}"></div></div>
+      <div class="goal-foot">
+        <span style="font-weight:800;color:${st.color}">${pctShown}%</span>
+        ${g.deadline ? `<span class="faint">vence ${fmtDue(g.deadline)}</span>` : '<span class="faint">sin fecha</span>'}
+      </div>
+      ${g.notes ? `<div class="goal-notes faint">${esc(g.notes)}</div>` : ''}
+    </div>`;
+  }
+  html += '</div>';
+  $('#main').innerHTML = html;
+}
+
+function newGoalModal(spaceId) {
+  const spaces = S.spaces;
+  if (!spaces.length) { toast('Crea primero un espacio', 'err'); return; }
+  const sel = spaceId || (route.type === 'list' ? (spaceOfList(route.listId) || {}).id : spaces[0].id) || spaces[0].id;
+  showModal(`
+    <h2>Nueva meta</h2>
+    <div class="sec"><input type="text" id="g-name" placeholder="Ej: Revenue Q3, Usuarios registrados…"></div>
+    <div class="sec" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div><h4>Proyecto</h4>
+        <select id="g-space" class="cf-input">${spaces.map(s => `<option value="${s.id}" ${s.id === sel ? 'selected' : ''}>${esc(s.icon || '')} ${esc(s.name)}</option>`).join('')}</select>
+      </div>
+      <div><h4>Tipo</h4>
+        <select id="g-kind" class="cf-input" onchange="document.getElementById('g-unit').style.display=this.value==='number'?'block':'none'">
+          <option value="number">Número (usuarios, reservas…)</option>
+          <option value="currency">Dinero ($)</option>
+          <option value="percent">Porcentaje (%)</option>
+        </select>
+      </div>
+    </div>
+    <div class="sec" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+      <div><h4>Meta (objetivo)</h4><input type="number" step="any" id="g-target" placeholder="5000"></div>
+      <div><h4>Actual</h4><input type="number" step="any" id="g-current" value="0"></div>
+      <div><h4 id="g-unit-label">Unidad</h4><input type="text" id="g-unit" placeholder="usuarios"></div>
+    </div>
+    <div class="sec"><h4>Fecha límite (opcional)</h4><input type="date" id="g-due" class="cf-input"></div>
+    <div class="sec"><h4>Nota (opcional)</h4><input type="text" id="g-notes" placeholder="Contexto o cómo se mide"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px">
+      <button class="btn btn-soft" onclick="closeModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="createGoal()">${I.plus} Crear meta</button>
+    </div>`);
+  setTimeout(() => $('#g-name')?.focus(), 60);
+}
+async function createGoal() {
+  const name = $('#g-name').value.trim();
+  if (!name) { toast('Ponle un nombre a la meta', 'err'); return; }
+  await api('/api/goal', {
+    action: 'create', space_id: Number($('#g-space').value), name,
+    kind: $('#g-kind').value, target: $('#g-target').value || 0,
+    current: $('#g-current').value || 0, unit: $('#g-unit').value.trim(),
+    deadline: $('#g-due').value, notes: $('#g-notes').value.trim(),
+  });
+  closeModal();
+  toast('Meta creada ✓');
+  await refresh();
+}
+
+function editGoalModal(goalId) {
+  const g = (S.goals || []).find(x => x.id === goalId);
+  if (!g) return;
+  showModal(`
+    <h2>Editar meta</h2>
+    <div class="sec"><input type="text" id="g-name" value="${esc(g.name)}"></div>
+    <div class="sec" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+      <div><h4>Meta</h4><input type="number" step="any" id="g-target" value="${g.target}"></div>
+      <div><h4>Actual</h4><input type="number" step="any" id="g-current" value="${g.current}"></div>
+      <div><h4>Unidad</h4><input type="text" id="g-unit" value="${esc(g.unit)}"></div>
+    </div>
+    <div class="sec" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div><h4>Tipo</h4>
+        <select id="g-kind" class="cf-input">
+          ${['number', 'currency', 'percent'].map(k => `<option value="${k}" ${g.kind === k ? 'selected' : ''}>${k === 'number' ? 'Número' : k === 'currency' ? 'Dinero' : 'Porcentaje'}</option>`).join('')}
+        </select>
+      </div>
+      <div><h4>Fecha límite</h4><input type="date" id="g-due" class="cf-input" value="${esc(g.deadline)}"></div>
+    </div>
+    <div class="sec"><h4>Nota</h4><input type="text" id="g-notes" value="${esc(g.notes || '')}"></div>
+    <div style="display:flex;justify-content:space-between;gap:10px">
+      <button class="btn btn-danger" onclick="deleteGoal(${g.id})">${I.trash} Eliminar</button>
+      <div style="display:flex;gap:10px">
+        <button class="btn btn-soft" onclick="closeModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="saveGoal(${g.id})">Guardar</button>
+      </div>
+    </div>`);
+}
+async function saveGoal(id) {
+  const name = $('#g-name').value.trim();
+  if (!name) { toast('La meta necesita un nombre', 'err'); return; }
+  await api('/api/goal', {
+    action: 'update', id, name, kind: $('#g-kind').value,
+    target: $('#g-target').value || 0, current: $('#g-current').value || 0,
+    unit: $('#g-unit').value.trim(), deadline: $('#g-due').value, notes: $('#g-notes').value.trim(),
+  });
+  closeModal();
+  toast('Meta actualizada ✓');
+  await refresh();
+}
+async function deleteGoal(id) {
+  if (!confirm('¿Eliminar esta meta?')) return;
+  await api('/api/goal', { action: 'delete', id });
+  closeModal();
+  toast('Meta eliminada');
+  await refresh();
 }
 
 /* ---------------------------------------------------------- vista: lista conectada (read-only) */
@@ -741,6 +926,7 @@ function viewInicio() {
       ${miDia.length ? miDia.slice(0, 8).map(homeTaskRow).join('') : emptyState('🎉', 'Día despejado', 'Nada vencido ni urgente para hoy')}
     </div>
     <div>
+      ${homeGoalsCard()}
       <div class="panel-card" style="margin-bottom:var(--space-6)">
         <h3><span class="left">${I.folder} Tus proyectos</span><button class="icon-btn" style="width:28px;height:28px" onclick="refreshMD()" title="Re-escanear">${I.refresh}</button></h3>
         <div id="home-md">${mdSkeleton()}</div>
@@ -753,6 +939,25 @@ function viewInicio() {
   </div>`;
   $('#main').innerHTML = html;
   fillHomeMD();
+}
+function homeGoalsCard() {
+  const goals = S.goals || [];
+  if (!goals.length) return '';
+  const spaceName = {};
+  S.spaces.forEach(sp => { spaceName[sp.id] = sp.name; });
+  return `<div class="panel-card" style="margin-bottom:var(--space-6)">
+    <h3><span class="left">${I.chart} Metas</span></h3>
+    ${goals.slice(0, 5).map(g => {
+      const st = goalStatus(g);
+      return `<div class="home-goal" onclick="editGoalModal(${g.id})" style="cursor:pointer">
+        <div class="home-goal-top">
+          <span class="home-goal-name">${esc(g.name)} <span class="faint" style="font-weight:500">· ${esc(spaceName[g.space_id] || '')}</span></span>
+          <span class="home-goal-val" style="color:${st.color}">${Math.round(st.pct)}%</span>
+        </div>
+        <div class="home-goal-bar"><div class="home-goal-bar-fill" style="width:${Math.min(100, st.pct)}%;background:${st.color}"></div></div>
+      </div>`;
+    }).join('')}
+  </div>`;
 }
 function mdSkeleton() { return '<div class="skeleton"></div><div class="skeleton" style="width:75%"></div><div class="skeleton" style="width:60%"></div>'; }
 
@@ -1042,10 +1247,18 @@ async function setTaskPrio(taskId, prio) {
 }
 function spaceMenu(ev, spaceId) {
   ev.stopPropagation();
+  const nGoals = (S.goals || []).filter(g => g.space_id === spaceId).length;
   popover(ev, `
+    <button class="pop-item" onclick="closePopovers();openSpacePanel(${spaceId})">${I.chart} Panel / Metas${nGoals ? ` <span class="faint">(${nGoals})</span>` : ''}</button>
     <button class="pop-item" onclick="renameSpace(${spaceId})">${I.edit} Renombrar</button>
     <button class="pop-item" onclick="addListPrompt(${spaceId});closePopovers()">${I.plus} Nueva lista</button>
     <button class="pop-item btn-danger" onclick="deleteSpace(${spaceId})">${I.trash} Eliminar espacio</button>`);
+}
+// Panel a nivel de espacio: route especial que no depende de una lista.
+function openSpacePanel(spaceId) {
+  route = { type: 'space-panel', spaceId, listId: null, tab: 'panel' };
+  q = '';
+  render();
 }
 
 /* ---------------------------------------------------------- crear / editar estructuras */
@@ -1113,10 +1326,10 @@ function openAddViewMenu(ev) {
     { id: 'tablero', name: 'Tablero', icon: I.board, desc: 'Kanban con drag & drop' },
     { id: 'calendario', name: 'Calendario', icon: I.cal, desc: 'Mes con tareas por fecha' },
     { id: 'tabla', name: 'Tabla', icon: I.all, desc: 'Spreadsheet con columnas custom' },
+    { id: 'panel', name: 'Panel', icon: I.chart, desc: 'Metas del proyecto con progreso' },
   ];
   const soon = [
     { id: 'gantt', name: 'Gantt', emoji: '📊', desc: 'Línea de tiempo con dependencias' },
-    { id: 'panel', name: 'Panel', emoji: '📈', desc: 'Métricas y metas del proyecto' },
     { id: 'documento', name: 'Documento', emoji: '📄', desc: 'Página tipo Notion para notas' },
     { id: 'cronograma', name: 'Cronograma', emoji: '🗓', desc: 'Timeline horizontal por fechas' },
     { id: 'mapa', name: 'Mapa mental', emoji: '🧠', desc: 'Whiteboard con ideas conectadas' },
@@ -1160,7 +1373,7 @@ async function toggleViewInline(v) {
     views.push(v);
     toast('Vista agregada ✓');
   }
-  const order = ['lista', 'tablero', 'calendario', 'tabla'];
+  const order = ['lista', 'tablero', 'calendario', 'tabla', 'panel'];
   views.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   S.settings.views = JSON.stringify(views);
   await api('/api/setting', { key: 'views', value: S.settings.views });
@@ -1556,7 +1769,7 @@ async function toggleView(v, el) {
     views = views.filter(x => x !== v);
     if (!views.length) { views = [v]; el.checked = true; toast('Debe quedar al menos una vista', 'err'); }
   }
-  const order = ['lista', 'tablero', 'calendario', 'tabla'];
+  const order = ['lista', 'tablero', 'calendario', 'tabla', 'panel'];
   views.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   S.settings.views = JSON.stringify(views);
   await api('/api/setting', { key: 'views', value: S.settings.views });
