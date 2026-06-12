@@ -406,6 +406,14 @@ def _fetch_source(source, path, max_rows=100):
         if "limit=" not in (path or ""):
             sep = "&" if "?" in (path or "") else "?"
             path = (path or "") + f"{sep}limit={max_rows}"
+    elif source["type"] == "github":
+        # Defaults para la API REST de GitHub
+        headers.setdefault("Accept", "application/vnd.github+json")
+        headers.setdefault("X-GitHub-Api-Version", "2022-11-28")
+        headers.setdefault("User-Agent", "Carmin")
+        if "per_page=" not in (path or ""):
+            sep = "&" if "?" in (path or "") else "?"
+            path = (path or "") + f"{sep}per_page={max_rows}"
     sep = "" if base.endswith("/") or (path or "").startswith("/") else "/"
     url = base + sep + (path or "")
     _assert_safe_url(url)  # rechaza file://, gopher://, etc.

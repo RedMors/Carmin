@@ -1423,6 +1423,10 @@ function openConnectSourceModal() {
           <div class="preview" style="background:linear-gradient(135deg,#3ECF8E 0%,#1E1318 100%)"></div>
           Supabase
         </div>
+        <div class="theme-card" data-stype="github" onclick="cs_pickType(this,'github')">
+          <div class="preview" style="background:linear-gradient(135deg,#8B97A6 0%,#1E1318 100%)"></div>
+          GitHub
+        </div>
         <div class="theme-card" data-stype="http" onclick="cs_pickType(this,'http')">
           <div class="preview" style="background:linear-gradient(135deg,#4E9CF5 0%,#1E1318 100%)"></div>
           API genérica
@@ -1471,6 +1475,23 @@ function cs_renderFields(type) {
         <input type="text" id="cs-path" value="trip_posts?select=id,title,status&limit=20" placeholder="tabla?col=eq.valor&select=...">
         <div class="faint" style="font-size:12px;margin-top:4px">Sintaxis estándar PostgREST. Sin la URL — solo lo que va después de <code>/rest/v1/</code>.</div>
       </div>`;
+  } else if (type === 'github') {
+    html += `
+      <div class="sec">
+        <h4>Repositorio</h4>
+        <input type="text" id="cs-repo" placeholder="RedMors/akatrek" value="RedMors/akatrek">
+        <div class="faint" style="font-size:12px;margin-top:4px">Formato <code>dueño/repo</code>. La URL de la API se arma sola.</div>
+      </div>
+      <div class="sec">
+        <h4>Token (opcional para repos públicos, requerido para privados)</h4>
+        <input type="text" id="cs-key" placeholder="ghp_... o github_pat_...">
+        <div class="faint" style="font-size:12px;margin-top:4px">Personal Access Token. Se guarda en <code>~/carmin/credentials.json</code>, nunca en la base.</div>
+      </div>
+      <div class="sec">
+        <h4>Filtro</h4>
+        <input type="text" id="cs-path" value="state=open" placeholder="state=open&labels=bug">
+        <div class="faint" style="font-size:12px;margin-top:4px">Parámetros de la API de issues de GitHub.</div>
+      </div>`;
   } else {
     html += `
       <div class="sec">
@@ -1486,6 +1507,7 @@ function cs_renderFields(type) {
         <input type="text" id="cs-path" placeholder="?status=open">
       </div>`;
   }
+  const mapStatusDefault = type === 'github' ? 'state' : 'status';
   html += `
     <div class="sec">
       <h4>Mapeo de campos (qué campo del JSON usar)</h4>
@@ -1493,7 +1515,7 @@ function cs_renderFields(type) {
         <span class="faint" style="font-size:12px">Título</span>
         <input type="text" id="cs-map-title" value="title" placeholder="ej: name">
         <span class="faint" style="font-size:12px">Estado</span>
-        <input type="text" id="cs-map-status" value="status" placeholder="ej: stage">
+        <input type="text" id="cs-map-status" value="${mapStatusDefault}" placeholder="ej: stage">
       </div>
     </div>`;
   $('#cs-fields').innerHTML = html;
@@ -1503,31 +1525,41 @@ async function cs_submit() {
   const type = _csType;
   const spaceId = Number($('#cs-space').value);
   const listName = $('#cs-list-name').value.trim();
-  const url = $('#cs-url').value.trim();
   const key = $('#cs-key').value.trim();
-  const path = $('#cs-path').value.trim();
   const mapTitle = $('#cs-map-title').value.trim() || 'title';
-  const mapStatus = $('#cs-map-status').value.trim() || 'status';
-  if (!listName || !url) { toast('Faltan campos requeridos', 'err'); return; }
+  const mapStatus = $('#cs-map-status').value.trim() || (type === 'github' ? 'state' : 'status');
 
-  // 1) Guardar credencial (si la dieron)
-  const credRef = (type === 'supabase' ? 'supa_' : 'http_') + Date.now().toString(36);
-  if (key) {
-    const credKey = type === 'supabase' ? 'anon_key' : 'auth';
-    await api('/api/creds', { action: 'set', ref: credRef, values: { [credKey]: key } });
+  // Cada tipo arma su url/path distinto
+  let url, path, cfg, credRef, sourceLabel;
+  if (type === 'github') {
+    const repo = ($('#cs-repo').value.trim() || '').replace(/^\/+|\/+$/g, '');
+    if (!listName || !/^[^/]+\/[^/]+$/.test(repo)) { toast('Repo inválido. Usa formato dueño/repo', 'err'); return; }
+    credRef = 'gh_' + Date.now().toString(36);
+    if (key) await api('/api/creds', { action: 'set', ref: credRef, values: { token: key } });
+    cfg = {
+      url: 'https://api.github.com', cred_ref: credRef,
+      headers: key ? { Authorization: 'Bearer ${token}' } : {},
+    };
+    path = `repos/${repo}/issues?${$('#cs-path').value.trim() || 'state=open'}`;
+    sourceLabel = `GitHub: ${repo}`;
+  } else {
+    url = $('#cs-url').value.trim();
+    path = $('#cs-path').value.trim();
+    if (!listName || !url) { toast('Faltan campos requeridos', 'err'); return; }
+    credRef = (type === 'supabase' ? 'supa_' : 'http_') + Date.now().toString(36);
+    if (key) {
+      const credKey = type === 'supabase' ? 'anon_key' : 'auth';
+      await api('/api/creds', { action: 'set', ref: credRef, values: { [credKey]: key } });
+    }
+    cfg = type === 'supabase'
+      ? { url: url.replace(/\/+$/, '') + '/rest/v1', cred_ref: credRef,
+          headers: { apikey: '${anon_key}', Authorization: 'Bearer ${anon_key}' } }
+      : { url, cred_ref: credRef, headers: key ? { Authorization: '${auth}' } : {} };
+    sourceLabel = `${type === 'supabase' ? 'Supabase' : 'HTTP'}: ${listName}`;
   }
-  // 2) Crear fuente
-  const cfg = type === 'supabase'
-    ? { url: url.replace(/\/+$/, '') + '/rest/v1', cred_ref: credRef,
-        headers: { apikey: '${anon_key}', Authorization: 'Bearer ${anon_key}' } }
-    : { url, cred_ref: credRef, headers: key ? { Authorization: '${auth}' } : {} };
-  const sourceRes = await api('/api/source', {
-    action: 'create', name: `${type === 'supabase' ? 'Supabase' : 'HTTP'}: ${listName}`,
-    type, config: cfg,
-  });
-  // 3) Crear lista en el espacio
+
+  const sourceRes = await api('/api/source', { action: 'create', name: sourceLabel, type, config: cfg });
   const listRes = await api('/api/list', { action: 'create', space_id: spaceId, name: listName });
-  // 4) Conectar
   await api('/api/source', {
     action: 'connect_list', list_id: listRes.id, source_id: sourceRes.id,
     path, mapping: { title: mapTitle, status: mapStatus },
