@@ -22,8 +22,12 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(BASE, "static")
 DB_PATH = os.path.join(BASE, "data.db")
 CREDS_PATH = os.path.join(BASE, "credentials.json")
-HOST = "127.0.0.1"  # solo accesible desde esta Mac (compartir en red llegará después)
+HOST = "127.0.0.1"          # binding por defecto: solo esta Mac
 DEFAULT_PORT = 4848
+
+# Modo compartir: cuando está activo, el server escucha en la red (para Tailscale)
+# y EXIGE un token en cada request a /api/*. Se activa con --share / CARMIN_SHARE=1.
+SHARE_MODE = ("--share" in sys.argv) or (os.environ.get("CARMIN_SHARE") == "1")
 
 # Carpetas que nunca se escanean al buscar archivos .md
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -359,6 +363,33 @@ def _save_creds(creds):
         pass
 
 
+def get_share_tokens(create=False):
+    """Devuelve {'owner': '...', 'guest': '...'} desde credentials.json __share__.
+    Si create=True y no existen, los genera y guarda."""
+    import secrets
+    creds = _load_creds()
+    share = creds.get("__share__") or {}
+    if create and (not share.get("owner") or not share.get("guest")):
+        share = {"owner": secrets.token_urlsafe(18), "guest": secrets.token_urlsafe(18)}
+        creds["__share__"] = share
+        _save_creds(creds)
+    return share
+
+
+def role_for_token(token):
+    """owner | guest | None. En modo local (sin share) todo es owner."""
+    if not SHARE_MODE:
+        return "owner"
+    if not token:
+        return None
+    share = get_share_tokens()
+    if token == share.get("owner"):
+        return "owner"
+    if token == share.get("guest"):
+        return "guest"
+    return None
+
+
 def _expand_vars(s, creds_for_ref):
     """Reemplaza ${KEY} con el valor de creds_for_ref[KEY]. Si no existe, deja la marca."""
     if not isinstance(s, str):
@@ -370,17 +401,36 @@ def _expand_vars(s, creds_for_ref):
 
 
 def _assert_safe_url(url):
-    """Bloquea schemes peligrosos. urllib soporta file://, ftp://, gopher://...
-    Si no validamos, alguien crea una fuente con `file:///etc/passwd` y la app la
-    lee como si fuera una API externa. Limitamos estrictamente a http(s)."""
+    """Bloquea schemes peligrosos y hosts internos (SSRF).
+    - file://, ftp://, gopher:// → rechazados (urllib los soporta por defecto).
+    - 169.254.0.0/16 (metadata de AWS/GCP/Azure) → SIEMPRE bloqueado.
+    - rangos privados/loopback → bloqueados en modo compartir (en local se permiten
+      por si conectas un Supabase/servicio en localhost durante desarrollo)."""
+    import ipaddress
     try:
         p = urlparse(url)
     except Exception:
         raise ApiError("URL inválida")
     if p.scheme not in ("http", "https"):
         raise ApiError(f"Solo URLs http/https están permitidas. Recibí scheme '{p.scheme}'.")
-    if not p.netloc:
+    host = p.hostname
+    if not host:
         raise ApiError("URL inválida (sin host)")
+    # Resolver todas las IPs del host y validarlas.
+    try:
+        infos = socket.getaddrinfo(host, None)
+        ips = {info[4][0] for info in infos}
+    except socket.gaierror:
+        raise ApiError(f"No pude resolver el host: {host}")
+    for ip_str in ips:
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if ip.is_link_local:  # 169.254.x — metadata de cloud, SIEMPRE peligroso
+            raise ApiError("Destino bloqueado (rango link-local / metadata).")
+        if SHARE_MODE and (ip.is_private or ip.is_loopback or ip.is_reserved):
+            raise ApiError("En modo compartir no se permite conectar a hosts internos de tu red.")
 
 
 def _fetch_source(source, path, max_rows=100):
@@ -958,7 +1008,9 @@ def _creds(action, b):
     solo los nombres (cred_ref) y qué claves tiene cada uno."""
     creds = _load_creds()
     if action == "list":
-        return {"creds": {ref: list(vals.keys()) for ref, vals in creds.items()}}
+        # __share__ guarda los tokens de compartir — nunca se expone al cliente.
+        return {"creds": {ref: list(vals.keys()) for ref, vals in creds.items()
+                          if ref != "__share__" and isinstance(vals, dict)}}
     if action == "set":
         ref = str(b.get("ref", "")).strip()
         values = b.get("values") or {}
@@ -990,9 +1042,24 @@ MIME = {
 }
 
 
+# Acciones de escritura que un invitado SÍ puede hacer (solo comentar/sugerir).
+GUEST_WRITE_ALLOWED = {("/api/comment", "create")}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # silencio en consola
+
+    def _token(self):
+        # Token desde header X-Carmin-Token o query ?token=
+        h = self.headers.get("X-Carmin-Token")
+        if h:
+            return h.strip()
+        from urllib.parse import parse_qs
+        return (parse_qs(urlparse(self.path).query).get("token") or [""])[0]
+
+    def _role(self):
+        return role_for_token(self._token())
 
     def _send(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
@@ -1014,12 +1081,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         p = urlparse(self.path).path
         try:
+            # Estáticos (HTML/CSS/JS) no llevan datos → sin token. La app pide token aparte.
             if p == "/":
                 return self._file("index.html")
             if p.startswith("/static/"):
                 return self._file(p[len("/static/"):])
+            # /api/* exige token válido cuando el modo compartir está activo.
+            if SHARE_MODE and not self._role():
+                return self._send(401, {"error": "token requerido o inválido"})
             if p == "/api/state":
-                return self._send(200, get_state())
+                st = get_state()
+                st["viewer"] = {"role": self._role() or "owner", "share": SHARE_MODE}
+                return self._send(200, st)
             if p == "/api/md":
                 return self._send(200, get_md_overview())
             if p == "/api/source/fetch":
@@ -1048,6 +1121,13 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self._send(400, {"error": "JSON inválido"})
+        # Control de acceso para escritura cuando se está compartiendo.
+        if SHARE_MODE:
+            role = self._role()
+            if not role:
+                return self._send(401, {"error": "token requerido o inválido"})
+            if role == "guest" and (p, body.get("action")) not in GUEST_WRITE_ALLOWED:
+                return self._send(403, {"error": "Modo invitado: solo lectura. Puedes comentar, no editar."})
         try:
             out = api_post(p, body)
             self._send(200, out if out is not None else {"ok": True})
@@ -1061,7 +1141,17 @@ class Handler(BaseHTTPRequestHandler):
 
 def port_in_use(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex((HOST, port)) == 0
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def tailscale_ip():
+    """IP de Tailscale (100.x.y.z) si está disponible. None si no."""
+    try:
+        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=3)
+        ip = out.stdout.strip().splitlines()[0] if out.stdout.strip() else ""
+        return ip if ip.startswith("100.") else None
+    except Exception:
+        return None
 
 
 def main():
@@ -1073,6 +1163,7 @@ def main():
         except (IndexError, ValueError):
             pass
 
+    bind = "0.0.0.0" if SHARE_MODE else HOST  # en share escuchamos en la red (Tailscale)
     url = "http://%s:%d" % (HOST, port)
     if port_in_use(port):
         print("Carmín ya está corriendo → abriendo %s" % url)
@@ -1081,14 +1172,28 @@ def main():
         return
 
     init_db()
-    server = ThreadingHTTPServer((HOST, port), Handler)
+    server = ThreadingHTTPServer((bind, port), Handler)
     server.daemon_threads = True
     print("")
     print("  ● Carmín está listo")
     print("  → %s" % url)
+    if SHARE_MODE:
+        tokens = get_share_tokens(create=True)
+        tsip = tailscale_ip()
+        host_for_share = tsip or "<IP-de-tu-red>"
+        print("")
+        print("  \033[1mMODO COMPARTIR ACTIVO\033[0m (escuchando en la red)")
+        print("  Tú (control total):")
+        print("    http://%s:%d/?token=%s" % (host_for_share, port, tokens["owner"]))
+        print("  Invitado (solo lectura + comentarios) — comparte este link:")
+        print("    http://%s:%d/?token=%s" % (host_for_share, port, tokens["guest"]))
+        if not tsip:
+            print("")
+            print("  \033[33m! No detecté Tailscale.\033[0m Instálalo en ambas computadoras")
+            print("    (https://tailscale.com/download) y vuelve a correr `carmin share`.")
     print("  (deja esta ventana abierta; Ctrl+C para apagar)")
     print("")
-    if open_browser:
+    if open_browser and not SHARE_MODE:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
