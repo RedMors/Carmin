@@ -397,6 +397,112 @@ def cmd_proyectos(_args):
             print(f"      · {l['name']:<20} {C['dim']}{n_open} abiertas{C['reset']}")
 
 
+def _fmt_goal_value(v, kind, unit):
+    if kind == 'currency':
+        return f"${v:,.0f}"
+    if kind == 'percent':
+        return f"{v:g}%"
+    s = f"{v:,.0f}" if float(v).is_integer() else f"{v:,.2f}"
+    return f"{s} {unit}".strip()
+
+
+def _find_space(s, query):
+    spaces = s['spaces']
+    if str(query).isdigit():
+        for sp in spaces:
+            if sp['id'] == int(query):
+                return sp
+    q = str(query).lower()
+    matches = [sp for sp in spaces if q in sp['name'].lower()]
+    if not matches:
+        names = ', '.join(sp['name'] for sp in spaces)
+        _fail(f"Espacio no encontrado: '{query}'. Disponibles: {names}")
+    return matches[0]
+
+
+def _find_goal(s, query):
+    goals = s.get('goals', [])
+    if not goals:
+        _fail("No hay metas todavía. Crea una con `carmin meta`.")
+    if str(query).isdigit():
+        for g in goals:
+            if g['id'] == int(query):
+                return g
+    q = str(query).lower()
+    matches = [g for g in goals if q in g['name'].lower()]
+    if not matches:
+        _fail(f"Ninguna meta coincide con '{query}'")
+    if len(matches) == 1:
+        return matches[0]
+    print(f"{C['yellow']}!{C['reset']} '{query}' coincide con varias metas:")
+    for g in matches[:10]:
+        print(f"  {g['id']:>4}  {g['name']}")
+    sys.exit(1)
+
+
+def cmd_metas(_args):
+    _ensure_server()
+    s = _state()
+    goals = s.get('goals', [])
+    if not goals:
+        print(f"{C['dim']}Sin metas. Crea una: carmin meta \"Revenue Q3\" --espacio Akatrek --target 5000 --kind currency{C['reset']}")
+        return
+    space_name = {sp['id']: sp['name'] for sp in s['spaces']}
+    print(f"{C['bold']}Metas:{C['reset']}")
+    for g in goals:
+        pct = (g['current'] / g['target'] * 100) if g['target'] else 0
+        bar_len = 24
+        filled = max(0, min(bar_len, round(pct / 100 * bar_len)))
+        color = C['green'] if pct >= 100 else (C['blue'] if pct >= 50 else C['yellow'])
+        bar = color + '█' * filled + C['dim'] + '░' * (bar_len - filled) + C['reset']
+        cur = _fmt_goal_value(g['current'], g['kind'], g['unit'])
+        tgt = _fmt_goal_value(g['target'], g['kind'], g['unit'])
+        due = f" · vence {g['deadline']}" if g['deadline'] else ""
+        print(f"  {C['bold']}#{g['id']} {g['name']}{C['reset']}  {C['dim']}({space_name.get(g['space_id'], '?')}){C['reset']}")
+        print(f"    {bar} {color}{pct:.0f}%{C['reset']}  {cur} / {tgt}{C['dim']}{due}{C['reset']}")
+
+
+def cmd_meta(args):
+    if not args or args[0].startswith('--'):
+        _fail('Uso: carmin meta "Nombre" --espacio Akatrek --target 5000 [--actual 0] [--kind currency|number|percent] [--unit USD] [--due 2026-09-30]')
+    _ensure_server()
+    name = args[0]
+    s = _state()
+    space_q = _arg_value(args[1:], '--espacio') or _arg_value(args[1:], '--space')
+    if isinstance(space_q, list):
+        space_q = space_q[0]
+    sp = _find_space(s, space_q) if space_q else (s['spaces'][0] if s['spaces'] else None)
+    if not sp:
+        _fail("No hay espacios. Crea uno desde la app primero.")
+    target = _arg_value(args[1:], '--target') or _arg_value(args[1:], '--meta') or '0'
+    actual = _arg_value(args[1:], '--actual') or _arg_value(args[1:], '--current') or '0'
+    kind = _arg_value(args[1:], '--kind') or 'number'
+    unit = _arg_value(args[1:], '--unit') or ''
+    due = _arg_value(args[1:], '--due') or _arg_value(args[1:], '--deadline') or ''
+    if due and not DATE_RE.match(due):
+        _fail(f"Fecha inválida '{due}'. Formato: YYYY-MM-DD")
+    r = _api("POST", "/api/goal", {
+        "action": "create", "space_id": sp['id'], "name": name,
+        "kind": kind, "target": target, "current": actual, "unit": unit, "deadline": due,
+    })
+    _ok(f"Meta #{r['id']} creada en {sp['name']}: {name}")
+
+
+def cmd_meta_set(args):
+    if len(args) < 2:
+        _fail('Uso: carmin meta-set "buscar meta" <valor>   (actualiza el valor actual)')
+    _ensure_server()
+    s = _state()
+    g = _find_goal(s, args[0])
+    try:
+        val = float(args[1])
+    except ValueError:
+        _fail(f"'{args[1]}' no es un número")
+    _api("POST", "/api/goal", {"action": "update", "id": g['id'], "current": val})
+    pct = (val / g['target'] * 100) if g['target'] else 0
+    _ok(f"#{g['id']} {g['name']} → {_fmt_goal_value(val, g['kind'], g['unit'])} ({pct:.0f}% de la meta)")
+
+
 def cmd_ayuda(_args):
     print(f"""
 {C['bold']}● Carmín{C['reset']} — gestor local estilo ClickUp
@@ -419,6 +525,11 @@ def cmd_ayuda(_args):
   carmin done "PR quickwins"
   carmin nota "PR quickwins" "Mergeé a main, falta verificar en prod"
 
+{C['dim']}Metas del proyecto:{C['reset']}
+  carmin metas                                       ver progreso de todas
+  carmin meta "Revenue Q3" --espacio Akatrek --target 5000 --kind currency --unit USD --due 2026-09-30
+  carmin meta-set "Revenue Q3" 1250                  actualizar el valor actual
+
 {C['dim']}Para Claude:{C['reset']} ver CLAUDE.md en este directorio
 """)
 
@@ -434,6 +545,9 @@ COMMANDS = {
     'nota': cmd_nota, 'note': cmd_nota, 'comment': cmd_nota,
     'estados': cmd_estados,
     'proyectos': cmd_proyectos, 'projects': cmd_proyectos,
+    'metas': cmd_metas, 'goals': cmd_metas,
+    'meta': cmd_meta, 'goal': cmd_meta,
+    'meta-set': cmd_meta_set, 'meta-update': cmd_meta_set, 'avance': cmd_meta_set,
     'ayuda': cmd_ayuda, 'help': cmd_ayuda, '-h': cmd_ayuda, '--help': cmd_ayuda,
 }
 

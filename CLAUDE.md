@@ -35,6 +35,22 @@ carmin nueva "Bug en stops/route" --proyecto Trip-App --prio alta
   con varias, el CLI te muestra los IDs para que elijas con el ID exacto.
 - Puedes usar el ID en vez del título: `carmin done 12`.
 
+## Metas del proyecto
+
+Un espacio (proyecto) puede tener metas con valor objetivo y avance. Si el
+usuario menciona un objetivo medible ("quiero llegar a X usuarios", "la meta
+de revenue es Y"), puedes registrarlo y actualizarlo:
+
+```bash
+carmin metas                                    # ver progreso de todas
+carmin meta "Revenue Q3" --espacio Akatrek --target 5000 --kind currency --unit USD --due 2026-09-30
+carmin meta-set "Revenue Q3" 1250               # actualizar el valor actual
+```
+
+Cuando trabajes en algo que mueva una meta (cerraste una venta, subió el
+número de usuarios), actualízala con `meta-set` y déjalo claro en la nota de
+la tarea relacionada. Así el usuario ve su brújula al día sin pedírtelo.
+
 ## Al terminar la sesión
 
 **Esto es lo más importante.** Antes de despedirte, deja una nota corta en
