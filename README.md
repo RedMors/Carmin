@@ -29,6 +29,8 @@ Se abre solo en tu navegador en `http://127.0.0.1:4848`. Para apagarlo: `Ctrl+C`
 - ✅ **Inicio**: tu día de un vistazo (vencidas, para hoy, urgentes)
 - ✅ **Proyectos**: vigila carpetas con archivos `.md` — qué cambió, qué checkbox sigue pendiente, y el estado git (cambios sin commit / commits sin subir)
 - ✅ Convierte un `- [ ]` de tus notas en tarea con un clic
+- ✅ **Adjuntos**: pega una imagen (⌘/Ctrl+V), arrástrala al panel o elige archivos de tu computadora
+- ✅ **Relaciones entre tareas**: conéctalas — *bloquea*, *bloqueada por*, *relacionada con*, *duplica*
 - ✅ Estados personalizables (nombre, color, orden)
 - ✅ Prioridades, fechas límite, etiquetas y comentarios
 - ✅ Tema **Dark Crimson** y tema **Blanco**, con color de acento editable

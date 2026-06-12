@@ -3,7 +3,9 @@
 # Cero dependencias: solo Python 3.9+ (ya viene en tu Mac). Datos en SQLite junto a este archivo.
 # Uso:  python3 app.py [--port 4848] [--no-browser]
 
+import base64
 import json
+import mimetypes
 import os
 import re
 import socket
@@ -11,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import uuid
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,6 +25,8 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(BASE, "static")
 DB_PATH = os.path.join(BASE, "data.db")
 CREDS_PATH = os.path.join(BASE, "credentials.json")
+UPLOAD_DIR = os.path.join(BASE, "uploads")   # adjuntos de tareas (imágenes/archivos)
+MAX_UPLOAD = 25 * 1024 * 1024                 # 25 MB por archivo
 HOST = "127.0.0.1"          # binding por defecto: solo esta Mac
 DEFAULT_PORT = 4848
 
@@ -124,6 +129,22 @@ CREATE TABLE IF NOT EXISTS goals(
   pos        INTEGER NOT NULL DEFAULT 0,
   created_at TEXT,
   updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS attachments(
+  id         INTEGER PRIMARY KEY,
+  task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,                    -- nombre original del archivo
+  stored     TEXT NOT NULL,                    -- nombre en disco (uuid.ext)
+  mime       TEXT NOT NULL DEFAULT '',
+  size       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS task_links(
+  id         INTEGER PRIMARY KEY,
+  src_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  dst_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL DEFAULT 'rel',      -- rel | blocks | blocked | dup
+  created_at TEXT
 );
 """
 
@@ -249,10 +270,13 @@ def get_state():
         comments = [dict(r) for r in con.execute("SELECT * FROM comments ORDER BY id")]
         folders = [dict(r) for r in con.execute("SELECT * FROM folders ORDER BY id")]
         goals = [dict(r) for r in con.execute("SELECT * FROM goals ORDER BY pos,id")]
+        attachments = [dict(r) for r in con.execute("SELECT * FROM attachments ORDER BY id")]
+        links = [dict(r) for r in con.execute("SELECT * FROM task_links ORDER BY id")]
         return {
             "settings": settings, "statuses": statuses, "spaces": spaces,
             "tasks": tasks, "comments": comments, "folders": folders,
             "sources": sources_list, "goals": goals,
+            "attachments": attachments, "links": links,
         }
     finally:
         con.close()
@@ -605,6 +629,12 @@ def api_post(path, b):
                 return _source(con, action, b)
             if path == "/api/goal":
                 return _goal(con, action, b)
+            if path == "/api/upload":
+                return _upload(con, b)
+            if path == "/api/attachment":
+                return _attachment(con, action, b)
+            if path == "/api/link":
+                return _link(con, action, b)
             if path == "/api/creds":
                 return _creds(action, b)
             raise ApiError("Ruta desconocida: %s" % path)
@@ -676,6 +706,10 @@ def _task(con, action, b):
         return {"ok": True}
 
     if action == "delete":
+        # Borra los archivos en disco de los adjuntos antes de que el CASCADE
+        # elimine sus filas (si no, quedarían huérfanos en uploads/).
+        for r in con.execute("SELECT stored FROM attachments WHERE task_id=?", (task_id,)):
+            _remove_upload(r["stored"])
         con.execute("DELETE FROM tasks WHERE id=?", (task_id,))
         return {"ok": True}
     raise ApiError("Acción desconocida")
@@ -836,6 +870,109 @@ def _comment(con, action, b):
         return {"ok": True}
     if action == "delete":
         con.execute("DELETE FROM comments WHERE id=?", (b.get("id"),))
+        return {"ok": True}
+    raise ApiError("Acción desconocida")
+
+
+# ------------------------------------------------------------- adjuntos
+
+SAFE_EXT = re.compile(r"^[A-Za-z0-9]{1,8}$")
+
+
+def _safe_ext(name, mime):
+    """Extensión segura para el archivo en disco: de la del original si es
+    alfanumérica corta, si no la deduce del mime. '' si no hay nada fiable."""
+    ext = os.path.splitext(str(name or ""))[1].lstrip(".").lower()
+    if SAFE_EXT.match(ext):
+        return "." + ext
+    guess = mimetypes.guess_extension(str(mime or "").split(";")[0].strip() or "")
+    return guess or ""
+
+
+def _remove_upload(stored):
+    """Borra un archivo de uploads/ de forma segura (sin salir del directorio)."""
+    if not stored:
+        return
+    fp = os.path.normpath(os.path.join(UPLOAD_DIR, stored))
+    if fp.startswith(UPLOAD_DIR + os.sep) and os.path.isfile(fp):
+        try:
+            os.remove(fp)
+        except OSError:
+            pass
+
+
+def _upload(con, b):
+    """Guarda un archivo adjunto (imagen pegada/arrastrada o archivo elegido).
+    El cliente manda el contenido en base64 (acepta data-URL)."""
+    task_id = b.get("task_id")
+    if not con.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone():
+        raise ApiError("Esa tarea ya no existe")
+    name = str(b.get("name", "archivo")).strip()[:200] or "archivo"
+    mime = str(b.get("mime", "")).strip()[:120]
+    raw = b.get("data", "")
+    if not isinstance(raw, str) or not raw:
+        raise ApiError("Adjunto vacío")
+    if raw.startswith("data:"):
+        head, _, raw = raw.partition(",")
+        if not mime and ":" in head:
+            mime = head[5:].split(";")[0].strip()[:120]
+    try:
+        blob = base64.b64decode(raw, validate=False)
+    except Exception:
+        raise ApiError("No pude leer el adjunto (base64 inválido)")
+    if not blob:
+        raise ApiError("Adjunto vacío")
+    if len(blob) > MAX_UPLOAD:
+        raise ApiError("El archivo supera el límite de 25 MB")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    stored = uuid.uuid4().hex + _safe_ext(name, mime)
+    with open(os.path.join(UPLOAD_DIR, stored), "wb") as f:
+        f.write(blob)
+    con.execute(
+        "INSERT INTO attachments(task_id,name,stored,mime,size,created_at)"
+        " VALUES(?,?,?,?,?,?)",
+        (task_id, name, stored, mime, len(blob), now()))
+    return {"ok": True, "id": con.execute("SELECT last_insert_rowid() i").fetchone()["i"],
+            "stored": stored}
+
+
+def _attachment(con, action, b):
+    if action == "delete":
+        row = con.execute("SELECT stored FROM attachments WHERE id=?", (b.get("id"),)).fetchone()
+        if row:
+            _remove_upload(row["stored"])
+            con.execute("DELETE FROM attachments WHERE id=?", (b.get("id"),))
+        return {"ok": True}
+    raise ApiError("Acción desconocida")
+
+
+# ------------------------------------------------------------- relaciones
+
+LINK_KINDS = {"rel", "blocks", "blocked", "dup"}
+
+
+def _link(con, action, b):
+    if action == "create":
+        src, dst = b.get("src_id"), b.get("dst_id")
+        if src == dst:
+            raise ApiError("Una tarea no se relaciona consigo misma")
+        kind = str(b.get("kind", "rel")).strip().lower()
+        if kind not in LINK_KINDS:
+            raise ApiError("Tipo de relación inválido")
+        for tid in (src, dst):
+            if not con.execute("SELECT 1 FROM tasks WHERE id=?", (tid,)).fetchone():
+                raise ApiError("Esa tarea ya no existe")
+        # Evita duplicar exactamente la misma relación.
+        dup = con.execute(
+            "SELECT 1 FROM task_links WHERE src_id=? AND dst_id=? AND kind=?",
+            (src, dst, kind)).fetchone()
+        if not dup:
+            con.execute(
+                "INSERT INTO task_links(src_id,dst_id,kind,created_at) VALUES(?,?,?,?)",
+                (src, dst, kind, now()))
+        return {"ok": True}
+    if action == "delete":
+        con.execute("DELETE FROM task_links WHERE id=?", (b.get("id"),))
         return {"ok": True}
     raise ApiError("Acción desconocida")
 
@@ -1038,6 +1175,12 @@ MIME = {
     ".js": "text/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
     ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".heic": "image/heic",
+    ".pdf": "application/pdf",
     ".woff2": "font/woff2",
 }
 
@@ -1078,6 +1221,20 @@ class Handler(BaseHTTPRequestHandler):
         with open(fp, "rb") as f:
             self._send(200, f.read(), MIME.get(ext, "application/octet-stream"))
 
+    def _upload_file(self, rel):
+        """Sirve un adjunto desde uploads/. Solo nombres planos (sin subir de
+        directorio): los stored son uuid.ext, así que cualquier '/' o '..' es 404."""
+        rel = (rel or "").split("?")[0]
+        if not rel or "/" in rel or "\\" in rel or rel.startswith("."):
+            return self._send(404, {"error": "no encontrado"})
+        fp = os.path.normpath(os.path.join(UPLOAD_DIR, rel))
+        if not fp.startswith(UPLOAD_DIR + os.sep) or not os.path.isfile(fp):
+            return self._send(404, {"error": "no encontrado"})
+        ext = os.path.splitext(fp)[1].lower()
+        ctype = MIME.get(ext) or mimetypes.guess_type(fp)[0] or "application/octet-stream"
+        with open(fp, "rb") as f:
+            self._send(200, f.read(), ctype)
+
     def do_GET(self):
         p = urlparse(self.path).path
         try:
@@ -1086,9 +1243,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._file("index.html")
             if p.startswith("/static/"):
                 return self._file(p[len("/static/"):])
-            # /api/* exige token válido cuando el modo compartir está activo.
+            # /api/* y adjuntos exigen token válido cuando compartir está activo.
             if SHARE_MODE and not self._role():
                 return self._send(401, {"error": "token requerido o inválido"})
+            if p.startswith("/uploads/"):
+                return self._upload_file(p[len("/uploads/"):])
             if p == "/api/state":
                 st = get_state()
                 st["viewer"] = {"role": self._role() or "owner", "share": SHARE_MODE}

@@ -2,6 +2,9 @@
 data.db
 data.db-journal
 
+# Adjuntos de tareas (imágenes y archivos del usuario)
+uploads/
+
 # Credenciales de fuentes externas (Supabase keys, tokens de API, etc.)
 credentials.json
 

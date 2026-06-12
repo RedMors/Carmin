@@ -24,6 +24,9 @@ const I = {
   refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>',
   chart: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6"/><rect x="13" y="7" width="3" height="10"/></svg>',
   edit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
+  clip: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8.5 11.7 17.8a4.5 4.5 0 0 1-6.4-6.4l9-9a3 3 0 0 1 4.3 4.3l-9 9a1.5 1.5 0 0 1-2.2-2.1l8.3-8.3"/></svg>',
+  link: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 14.5a3.5 3.5 0 0 0 5 0l3-3a3.5 3.5 0 0 0-5-5l-1.2 1.2"/><path d="M14.5 9.5a3.5 3.5 0 0 0-5 0l-3 3a3.5 3.5 0 0 0 5 5l1.2-1.2"/></svg>',
+  download: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 11l5 5 5-5M5 21h14"/></svg>',
 };
 
 /* ---------------------------------------------------------- estado global */
@@ -124,6 +127,33 @@ const listById = (id) => { for (const sp of S.spaces) { const l = sp.lists.find(
 const spaceOfList = (id) => S.spaces.find(sp => sp.lists.some(l => l.id === id));
 const taskById = (id) => S.tasks.find(t => t.id === id);
 const commentsOf = (id) => S.comments.filter(c => c.task_id === id);
+const attachmentsOf = (id) => (S.attachments || []).filter(a => a.task_id === id);
+// Relaciones donde participa la tarea, normalizadas desde su punto de vista.
+const linksOf = (id) => (S.links || []).flatMap(l => {
+  if (l.src_id === id) return [{ id: l.id, kind: l.kind, other: l.dst_id, dir: 'out' }];
+  if (l.dst_id === id) return [{ id: l.id, kind: INVERSE_KIND[l.kind] || l.kind, other: l.src_id, dir: 'in' }];
+  return [];
+});
+const isImage = (a) => /^image\//.test(a.mime || '') || /\.(png|jpe?g|gif|webp|svg|heic)$/i.test(a.name || '');
+// URL del adjunto; en modo compartir adjunta el token (img/src no manda headers).
+function assetUrl(stored) {
+  const t = authToken();
+  return '/uploads/' + encodeURIComponent(stored) + (t ? '?token=' + encodeURIComponent(t) : '');
+}
+function fmtSize(n) {
+  if (!n) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+const LINK_KINDS = [
+  ['rel', 'Relacionada con', 'Relacionada con'],
+  ['blocks', 'Bloquea a', 'Bloqueada por'],
+  ['blocked', 'Bloqueada por', 'Bloquea a'],
+  ['dup', 'Duplica a', 'Duplicada por'],
+];
+const LINK_LABEL = Object.fromEntries(LINK_KINDS.map(k => [k[0], k[1]]));
+const INVERSE_KIND = { blocks: 'blocked', blocked: 'blocks', rel: 'rel', dup: 'dup' };
 const isDone = (t) => statusById(t.status_id).kind === 'done';
 const enabledViews = () => { try { const v = JSON.parse(S.settings.views || '[]'); return v.length ? v : ['lista']; } catch (e) { return ['lista', 'tablero', 'calendario']; } };
 
@@ -1165,6 +1195,8 @@ function renderPanel() {
           <div class="tp-section" style="margin-bottom:8px">Descripción</div>
           <textarea class="tp-descr" placeholder="Escribe los detalles…" onblur="saveField(${t.id},'descr',this.value)">${esc(t.descr || '')}</textarea>
         </div>
+        ${renderAttachments(t)}
+        ${renderRelations(t)}
         <div>
           <div class="tp-section" style="margin-bottom:8px">Comentarios y sugerencias (${comments.length})</div>
           ${comments.map(c => `
@@ -1187,6 +1219,180 @@ function renderPanel() {
   if (!wasOpen) { void layer.offsetHeight; layer.classList.add('open'); } // scrim fade-in solo al abrir
   const ta = layer.querySelector('.tp-title');
   ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
+  wireTaskAttachments(t.id);
+}
+
+/* ---------------------------------------------------------- adjuntos */
+function renderAttachments(t) {
+  const atts = attachmentsOf(t.id);
+  const addBtn = IS_GUEST ? '' :
+    `<button class="cf-edit-link" onclick="pickFiles(${t.id})" title="Elegir archivos de tu computadora">${I.clip} adjuntar</button>`;
+  const items = atts.map(a => {
+    const del = IS_GUEST ? '' :
+      `<button class="att-del" onclick="delAttachment(${a.id})" title="Quitar adjunto">${I.x}</button>`;
+    if (isImage(a)) {
+      return `<div class="att att-img">
+        <a href="${assetUrl(a.stored)}" target="_blank" rel="noopener" title="${esc(a.name)}"><img src="${assetUrl(a.stored)}" alt="${esc(a.name)}" loading="lazy"></a>
+        ${del}
+      </div>`;
+    }
+    return `<a class="att att-file" href="${assetUrl(a.stored)}" target="_blank" rel="noopener" download="${esc(a.name)}" title="${esc(a.name)}">
+      <span class="att-ico">${I.file}</span>
+      <span class="att-meta"><span class="att-name">${esc(a.name)}</span><span class="att-size">${esc(fmtSize(a.size))} · descargar</span></span>
+      ${del}
+    </a>`;
+  }).join('');
+  return `<div class="tp-attach">
+    <div class="tp-section" style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span>Adjuntos${atts.length ? ' (' + atts.length + ')' : ''}</span> ${addBtn}
+    </div>
+    ${items ? `<div class="att-grid">${items}</div>` : ''}
+    ${IS_GUEST ? '' : `<div class="att-hint">Arrastra archivos aquí, pega una imagen (⌘/Ctrl+V) o pulsa “adjuntar”.</div>`}
+  </div>`;
+}
+
+function pickFiles(taskId) {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.multiple = true;
+  inp.style.display = 'none';
+  inp.onchange = () => { if (inp.files && inp.files.length) uploadFiles(taskId, inp.files); inp.remove(); };
+  document.body.appendChild(inp);
+  inp.click();
+}
+
+function fileToDataURL(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = () => rej(r.error || new Error('lectura'));
+    r.readAsDataURL(file);
+  });
+}
+
+async function uploadFiles(taskId, fileList) {
+  if (IS_GUEST) return;
+  const files = Array.from(fileList);
+  if (!files.length) return;
+  const MAX = 25 * 1024 * 1024;
+  let ok = 0;
+  toast(files.length === 1 ? 'Subiendo adjunto…' : `Subiendo ${files.length} archivos…`);
+  for (const f of files) {
+    if (f.size > MAX) { toast(`“${f.name}” supera los 25 MB`, 'err'); continue; }
+    try {
+      const data = await fileToDataURL(f);
+      await api('/api/upload', { task_id: taskId, name: f.name || 'archivo', mime: f.type || '', data });
+      ok++;
+    } catch (e) { /* api() ya avisó */ }
+  }
+  if (ok) { await refresh(); toast(ok === 1 ? 'Adjunto agregado ✓' : `${ok} adjuntos agregados ✓`); }
+}
+
+async function delAttachment(id) {
+  if (!confirm('¿Quitar este adjunto?')) return;
+  await api('/api/attachment', { action: 'delete', id });
+  await refresh();
+}
+
+// Pegar imágenes (⌘/Ctrl+V) y arrastrar archivos sobre el panel de la tarea.
+function wireTaskAttachments(taskId) {
+  if (IS_GUEST) return;
+  const panel = $('#panel-layer .task-panel');
+  if (!panel) return;
+  const hasFiles = (dt) => dt && Array.from(dt.types || []).includes('Files');
+  let depth = 0;
+  panel.addEventListener('dragenter', e => {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault(); depth++; panel.classList.add('drag-over');
+  });
+  panel.addEventListener('dragover', e => {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+  });
+  panel.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) panel.classList.remove('drag-over'); });
+  panel.addEventListener('drop', e => {
+    if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+    e.preventDefault(); depth = 0; panel.classList.remove('drag-over');
+    uploadFiles(taskId, e.dataTransfer.files);
+  });
+  panel.addEventListener('paste', e => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    const files = [];
+    for (const it of items) if (it.kind === 'file') { const f = it.getAsFile(); if (f) files.push(f); }
+    if (files.length) { e.preventDefault(); uploadFiles(taskId, files); }  // texto se pega normal
+  });
+}
+
+/* ---------------------------------------------------------- relaciones entre tareas */
+function renderRelations(t) {
+  const links = linksOf(t.id);
+  if (!links.length && IS_GUEST) return '';
+  const addBtn = IS_GUEST ? '' :
+    `<button class="cf-edit-link" onclick="openLinkPicker(event,${t.id})" title="Relacionar con otra tarea">${I.link} relacionar</button>`;
+  const rows = links.map(l => {
+    const ot = taskById(l.other);
+    const st = ot ? statusById(ot.status_id) : null;
+    const del = IS_GUEST ? '' :
+      `<button class="icon-btn btn-danger" style="width:26px;height:26px" onclick="delLink(${l.id})" title="Quitar relación">${I.x}</button>`;
+    return `<div class="rel-row">
+      <span class="rel-kind">${esc(LINK_LABEL[l.kind] || 'Relacionada con')}</span>
+      <button class="rel-task" ${ot ? `onclick="openTask(${ot.id})"` : 'disabled'}>
+        ${st ? `<span class="rel-dot" style="background:${st.color}"></span>` : ''}
+        <span class="rel-title ${ot && isDone(ot) ? 'done' : ''}">${esc(ot ? ot.title : '(tarea eliminada)')}</span>
+      </button>
+      ${del}
+    </div>`;
+  }).join('');
+  return `<div class="tp-relations">
+    <div class="tp-section" style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span>Relaciones${links.length ? ' (' + links.length + ')' : ''}</span> ${addBtn}
+    </div>
+    ${rows}
+  </div>`;
+}
+
+function openLinkPicker(ev, taskId) {
+  ev.stopPropagation();
+  const kindOpts = LINK_KINDS.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+  const others = S.tasks.filter(x => x.id !== taskId);
+  const list = others.map(x => {
+    const st = statusById(x.status_id);
+    const sp = spaceOfList(x.list_id), l = listById(x.list_id);
+    const ctx = `${sp ? sp.name : ''}${l ? ' / ' + l.name : ''}`;
+    return `<button class="pop-item lp-task" data-title="${esc((x.title + ' ' + ctx).toLowerCase())}" onclick="addLink(${taskId},${x.id})">
+      <span class="status-dot" style="background:${st.color}"></span>
+      <span class="lp-text"><span class="lp-title">${esc(x.title)}</span><span class="lp-ctx">${esc(ctx)}</span></span>
+    </button>`;
+  }).join('');
+  popover(ev, `<div class="link-picker">
+    <select id="lp-kind" class="lp-kind">${kindOpts}</select>
+    <input id="lp-search" class="lp-search" placeholder="Buscar tarea…" oninput="filterLinkPicker(this.value)" autofocus>
+    <div class="lp-list">${list || '<div class="att-hint" style="padding:8px">No hay otras tareas todavía.</div>'}</div>
+  </div>`);
+  const s = document.getElementById('lp-search');
+  if (s) setTimeout(() => s.focus(), 0);
+}
+
+function filterLinkPicker(v) {
+  const k = v.trim().toLowerCase();
+  document.querySelectorAll('.lp-task').forEach(el => {
+    el.style.display = !k || el.dataset.title.includes(k) ? '' : 'none';
+  });
+}
+
+async function addLink(srcId, dstId) {
+  const sel = document.getElementById('lp-kind');
+  const kind = sel ? sel.value : 'rel';
+  closePopovers();
+  await api('/api/link', { action: 'create', src_id: srcId, dst_id: dstId, kind });
+  await refresh();
+  toast('Relación creada ✓');
+}
+
+async function delLink(id) {
+  await api('/api/link', { action: 'delete', id });
+  await refresh();
 }
 
 async function saveField(id, field, value) {

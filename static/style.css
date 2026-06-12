@@ -870,6 +870,75 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 .comment-form input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-softer); }
 .tp-foot { padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; color: var(--faint); font-size: 12px; }
 
+/* ---- adjuntos (imágenes / archivos) ---- */
+.att-hint { font-size: 12px; color: var(--faint); margin-top: 8px; }
+.att-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+.att {
+  position: relative; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--surface); overflow: hidden;
+}
+.att-img { width: 104px; height: 104px; }
+.att-img a { display: block; width: 100%; height: 100%; }
+.att-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.att-file {
+  display: flex; align-items: center; gap: 10px; padding: 9px 11px;
+  min-width: 180px; max-width: 280px; text-decoration: none; color: var(--text);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.att-file:hover { background: var(--surface2); border-color: var(--border2); }
+.att-ico { flex: none; color: var(--accent-text); display: flex; }
+.att-meta { display: flex; flex-direction: column; min-width: 0; }
+.att-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.att-size { font-size: 11px; color: var(--faint); }
+.att-del {
+  position: absolute; top: 4px; right: 4px; width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: var(--radius-full); cursor: pointer;
+  background: color-mix(in srgb, var(--bg) 62%, transparent); color: var(--text);
+  opacity: 0; transition: opacity var(--dur) var(--ease);
+}
+.att-file .att-del { position: static; opacity: 0; background: transparent; margin-left: auto; }
+.att:hover .att-del, .att-file:hover .att-del { opacity: .85; }
+.att-del:hover { opacity: 1 !important; color: #E5484D; background: color-mix(in srgb, #E5484D 16%, var(--surface)); }
+.task-panel.drag-over { outline: 2px dashed var(--accent); outline-offset: -6px; }
+.task-panel.drag-over::after {
+  content: 'Suelta para adjuntar'; position: absolute; inset: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; color: var(--accent-text); letter-spacing: .5px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent); pointer-events: none;
+}
+
+/* ---- relaciones entre tareas ---- */
+.rel-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.rel-kind {
+  flex: none; width: 112px; font-size: 11px; font-weight: 800; letter-spacing: .3px;
+  text-transform: uppercase; color: var(--faint);
+}
+.rel-task {
+  flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+  padding: 7px 11px; cursor: pointer; text-align: left; color: var(--text);
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.rel-task:hover:not([disabled]) { background: var(--surface2); border-color: var(--border2); }
+.rel-task[disabled] { cursor: default; opacity: .6; }
+.rel-dot { flex: none; width: 9px; height: 9px; border-radius: var(--radius-full); }
+.rel-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; }
+.rel-title.done { text-decoration: line-through; color: var(--faint); }
+
+/* ---- selector de relación ---- */
+.link-picker { width: 280px; display: flex; flex-direction: column; gap: 8px; }
+.lp-kind, .lp-search {
+  width: 100%; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 8px 10px; outline: none; color: var(--text); font: inherit;
+}
+.lp-kind:focus, .lp-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-softer); }
+.lp-list { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.lp-task { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; }
+.lp-text { display: flex; flex-direction: column; min-width: 0; }
+.lp-title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lp-ctx { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* ---------------------------------------------------------- modales y popovers */
 #modal-layer { position: fixed; inset: 0; z-index: 70; pointer-events: none; }
 #modal-layer .scrim {
