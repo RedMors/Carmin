@@ -31,6 +31,7 @@ Se abre solo en tu navegador en `http://127.0.0.1:4848`. Para apagarlo: `Ctrl+C`
 - ✅ Convierte un `- [ ]` de tus notas en tarea con un clic
 - ✅ **Adjuntos**: pega una imagen (⌘/Ctrl+V), arrástrala al panel o elige archivos de tu computadora
 - ✅ **Relaciones entre tareas**: conéctalas — *bloquea*, *bloqueada por*, *relacionada con*, *duplica*
+- ✅ **Grafo**: la red visual de tus tareas conectadas — arrastra los nodos, clic para abrir
 - ✅ Estados personalizables (nombre, color, orden)
 - ✅ Prioridades, fechas límite, etiquetas y comentarios
 - ✅ Tema **Dark Crimson** y tema **Blanco**, con color de acento editable

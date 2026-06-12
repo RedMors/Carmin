@@ -939,6 +939,35 @@ input, textarea, select { font-family: inherit; font-size: inherit; color: var(-
 .lp-title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lp-ctx { font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+/* ---------------------------------------------------------- grafo de relaciones */
+.graph-wrap { display: flex; flex-direction: column; height: 74vh; min-height: 440px; }
+.graph-legend { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 2px 2px 10px; color: var(--muted); font-size: 12.5px; }
+.gl-item { display: inline-flex; align-items: center; gap: 7px; }
+.gl-edge { width: 20px; border-top: 2.5px solid var(--border2); display: inline-block; }
+.gl-edge.blocks { border-top-color: #E5713B; }
+.gl-edge.rel { border-top-color: var(--border2); }
+.gl-edge.dup { border-top-color: #8B5CF6; border-top-style: dashed; }
+.gl-hint { margin-left: auto; color: var(--faint); }
+.graph-svg {
+  flex: 1; width: 100%; min-height: 0; touch-action: none; user-select: none;
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background:
+    radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 60%),
+    var(--surface);
+}
+.g-edge { stroke: var(--border2); stroke-width: 1.6; color: var(--border2); }
+.g-edge.blocks { stroke: #E5713B; color: #E5713B; }
+.g-edge.dup { stroke: #8B5CF6; color: #8B5CF6; stroke-dasharray: 5 4; }
+.g-node { cursor: pointer; }
+.g-node circle { stroke: var(--surface); stroke-width: 2.5; transition: filter .15s var(--ease); }
+.g-node:hover circle { filter: brightness(1.16); stroke: var(--accent); }
+.g-node.done circle { opacity: .5; }
+.g-label {
+  fill: var(--text); font-size: 11px; font-weight: 600; text-anchor: middle;
+  paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; pointer-events: none;
+}
+.g-node.done .g-label { fill: var(--faint); }
+
 /* ---------------------------------------------------------- modales y popovers */
 #modal-layer { position: fixed; inset: 0; z-index: 70; pointer-events: none; }
 #modal-layer .scrim {

@@ -27,6 +27,7 @@ const I = {
   clip: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8.5 11.7 17.8a4.5 4.5 0 0 1-6.4-6.4l9-9a3 3 0 0 1 4.3 4.3l-9 9a1.5 1.5 0 0 1-2.2-2.1l8.3-8.3"/></svg>',
   link: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 14.5a3.5 3.5 0 0 0 5 0l3-3a3.5 3.5 0 0 0-5-5l-1.2 1.2"/><path d="M14.5 9.5a3.5 3.5 0 0 0-5 0l-3 3a3.5 3.5 0 0 0 5 5l1.2-1.2"/></svg>',
   download: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 11l5 5 5-5M5 21h14"/></svg>',
+  graph: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.5"/><circle cx="18" cy="5" r="2.5"/><circle cx="12" cy="14" r="2.5"/><circle cx="6" cy="19" r="2.5"/><path d="M7.2 7.2 10 12.4M15.6 6.1 13.6 12M10.6 15.6 7.4 17.6"/></svg>',
 };
 
 /* ---------------------------------------------------------- estado global */
@@ -237,6 +238,7 @@ function renderSidebar() {
       : `<button class="create-btn" onclick="createMenu(event)">${I.plus} Crear <span class="caret">${I.chevron}</span></button>`}
     <button class="nav-item ${route.type === 'inicio' ? 'active' : ''}" onclick="nav('inicio')">${I.home} Inicio</button>
     <button class="nav-item ${route.type === 'all' ? 'active' : ''}" onclick="nav('all')">${I.all} Todas las tareas</button>
+    <button class="nav-item ${route.type === 'grafo' ? 'active' : ''}" onclick="nav('grafo')">${I.graph} Grafo</button>
     <button class="nav-item ${route.type === 'md' ? 'active' : ''}" onclick="nav('md')">${I.folder} Proyectos</button>
     <div class="nav-section">Espacios ${IS_GUEST ? '' : `<button onclick="addSpacePrompt()" title="Nuevo espacio">${I.plus}</button>`}</div>`;
   for (const sp of S.spaces) {
@@ -272,6 +274,7 @@ function renderTopbar() {
   let crumb = '';
   if (route.type === 'inicio') crumb = 'Inicio';
   else if (route.type === 'all') crumb = 'Todas las tareas';
+  else if (route.type === 'grafo') crumb = 'Grafo de relaciones';
   else if (route.type === 'md') crumb = 'Proyectos';
   else if (route.type === 'space-panel') {
     const sp = S.spaces.find(s => s.id === route.spaceId);
@@ -310,8 +313,10 @@ function renderTopbar() {
 }
 
 function renderMain() {
+  if (route.type !== 'grafo') stopGraph();   // libera la simulación al salir del grafo
   if (route.type === 'inicio') return viewInicio();
   if (route.type === 'space-panel') return viewPanel();
+  if (route.type === 'grafo') return viewGraph();
   if (route.type === 'md') return viewMD();
   // Lista conectada a fuente externa → render distinto, read-only.
   if (route.type === 'list') {
@@ -1143,6 +1148,211 @@ async function removeFolder(id) {
 
 function emptyState(icon, title, hint) {
   return `<div class="empty"><div class="big">${icon}</div><div style="font-weight:900">${title}</div><div class="hint">${hint || ''}</div></div>`;
+}
+
+/* ---------------------------------------------------------- grafo de relaciones */
+const SVGNS = 'http://www.w3.org/2000/svg';
+let graphSim = null;          // estado vivo de la simulación
+const graphPos = new Map();   // posiciones persistentes por id (estables entre renders)
+
+function stopGraph() {
+  if (graphSim && graphSim.raf) cancelAnimationFrame(graphSim.raf);
+  if (graphSim && graphSim.cleanup) graphSim.cleanup();
+  graphSim = null;
+}
+
+function viewGraph() {
+  stopGraph();
+  const links = S.links || [];
+  const ids = new Set();
+  links.forEach(l => { ids.add(l.src_id); ids.add(l.dst_id); });
+  const nodes = [...ids].map(id => taskById(id)).filter(Boolean);
+  if (!nodes.length) {
+    $('#main').innerHTML = `<div class="graph-wrap">${emptyState('🕸',
+      'Aún no hay relaciones que mostrar',
+      'Abre una tarea y usa “relacionar” para conectarla con otra (bloquea, relacionada con, duplica). La red aparecerá aquí.')}</div>`;
+    return;
+  }
+  const present = new Set(nodes.map(n => n.id));
+  const edges = links.filter(l => present.has(l.src_id) && present.has(l.dst_id));
+  $('#main').innerHTML = `
+    <div class="graph-wrap">
+      <div class="graph-legend">
+        <span class="gl-item"><span class="gl-edge blocks"></span> bloquea</span>
+        <span class="gl-item"><span class="gl-edge rel"></span> relacionada</span>
+        <span class="gl-item"><span class="gl-edge dup"></span> duplica</span>
+        <span class="gl-hint">${nodes.length} tareas · ${edges.length} relaciones — arrastra para reordenar, clic para abrir</span>
+      </div>
+      <svg id="graph-svg" class="graph-svg"></svg>
+    </div>`;
+  startGraphSim(nodes, edges);
+}
+
+function startGraphSim(taskNodes, edgeRows) {
+  const svg = document.getElementById('graph-svg');
+  if (!svg) return;
+  const rect = svg.getBoundingClientRect();
+  const w = Math.max(320, Math.round(rect.width) || 800);
+  const h = Math.max(320, Math.round(rect.height) || 560);
+
+  const nodes = taskNodes.map(t => {
+    const p = graphPos.get(t.id);
+    return {
+      id: t.id, t,
+      x: p ? p.x : w / 2 + (Math.random() - 0.5) * Math.min(w, h) * 0.6,
+      y: p ? p.y : h / 2 + (Math.random() - 0.5) * Math.min(w, h) * 0.6,
+      vx: 0, vy: 0, r: 9,
+    };
+  });
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  // Normaliza dirección: 'blocked' = inverso de 'blocks' (flecha apunta al bloqueado).
+  const edges = edgeRows.map(l => {
+    let s = byId.get(l.src_id), d = byId.get(l.dst_id), kind = l.kind;
+    if (kind === 'blocked') { const tmp = s; s = d; d = tmp; kind = 'blocks'; }
+    return { s, d, kind };
+  }).filter(e => e.s && e.d);
+
+  const deg = new Map(nodes.map(n => [n.id, 0]));
+  edges.forEach(e => { deg.set(e.s.id, deg.get(e.s.id) + 1); deg.set(e.d.id, deg.get(e.d.id) + 1); });
+  nodes.forEach(n => { n.r = 9 + Math.min(7, deg.get(n.id) * 1.6); });
+
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.innerHTML = `
+    <defs>
+      <marker id="g-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="currentColor"></path>
+      </marker>
+    </defs>
+    <g class="g-edges"></g><g class="g-nodes"></g>`;
+  const gE = svg.querySelector('.g-edges'), gN = svg.querySelector('.g-nodes');
+
+  const edgeEls = edges.map(e => {
+    const line = document.createElementNS(SVGNS, 'line');
+    line.setAttribute('class', 'g-edge ' + e.kind);
+    if (e.kind === 'blocks' || e.kind === 'dup') line.setAttribute('marker-end', 'url(#g-arrow)');
+    gE.appendChild(line);
+    return { e, line };
+  });
+  const nodeEls = nodes.map(n => {
+    const g = document.createElementNS(SVGNS, 'g');
+    g.setAttribute('class', 'g-node' + (isDone(n.t) ? ' done' : ''));
+    const st = statusById(n.t.status_id);
+    const circle = document.createElementNS(SVGNS, 'circle');
+    circle.setAttribute('r', n.r);
+    circle.setAttribute('fill', st.color);
+    const label = document.createElementNS(SVGNS, 'text');
+    label.setAttribute('class', 'g-label');
+    label.setAttribute('y', n.r + 14);
+    label.textContent = n.t.title.length > 26 ? n.t.title.slice(0, 25) + '…' : n.t.title;
+    g.appendChild(circle); g.appendChild(label);
+    g.addEventListener('pointerdown', ev => pointerDown(ev, n));
+    gN.appendChild(g);
+    return { n, g };
+  });
+
+  graphSim = { raf: null, alpha: 1, drag: null, svg, w, h, edges: edgeEls, nodeEls, cleanup };
+  draw();
+  kick();
+
+  function kick() {
+    graphSim.alpha = Math.max(graphSim.alpha, 0.35);
+    if (!graphSim.raf) graphSim.raf = requestAnimationFrame(tick);
+  }
+  function tick() {
+    if (!graphSim) return;
+    step(); draw();
+    graphSim.alpha *= 0.985;
+    graphSim.raf = (graphSim.alpha > 0.02 || graphSim.drag) ? requestAnimationFrame(tick) : null;
+  }
+  function step() {
+    const a = graphSim.alpha;
+    const REP = 9000, MAXREP = 40, SPRING = 0.06, LEN = 120, CENTER = 0.02, DAMP = 0.9;
+    const cx = graphSim.w / 2, cy = graphSim.h / 2;
+    for (const n of nodes) { n.fx = 0; n.fy = 0; }
+    // Repulsión entre todos los pares (n^2, suficiente para decenas de nodos).
+    for (let i = 0; i < nodes.length; i++) {
+      const p = nodes[i];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const qn = nodes[j];
+        let dx = p.x - qn.x, dy = p.y - qn.y;
+        let d2 = dx * dx + dy * dy || 0.01;
+        const d = Math.sqrt(d2);
+        let f = REP / d2; if (f > MAXREP) f = MAXREP;   // cap: evita explotar al solaparse
+        const ux = dx / d, uy = dy / d;
+        p.fx += ux * f; p.fy += uy * f;
+        qn.fx -= ux * f; qn.fy -= uy * f;
+      }
+    }
+    // Resortes a lo largo de las relaciones.
+    for (const e of edges) {
+      let dx = e.d.x - e.s.x, dy = e.d.y - e.s.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const f = (d - LEN) * SPRING, ux = dx / d, uy = dy / d;
+      e.s.fx += ux * f; e.s.fy += uy * f;
+      e.d.fx -= ux * f; e.d.fy -= uy * f;
+    }
+    // Gravedad al centro + integración (alpha solo enfría el desplazamiento).
+    const dragNode = graphSim.drag && graphSim.drag.node;
+    for (const n of nodes) {
+      if (n === dragNode) continue;
+      n.fx += (cx - n.x) * CENTER;
+      n.fy += (cy - n.y) * CENTER;
+      n.vx = (n.vx + n.fx) * DAMP;
+      n.vy = (n.vy + n.fy) * DAMP;
+      n.x += n.vx * a;
+      n.y += n.vy * a;
+      n.x = Math.max(n.r + 4, Math.min(graphSim.w - n.r - 4, n.x));
+      n.y = Math.max(n.r + 14, Math.min(graphSim.h - n.r - 18, n.y));
+      graphPos.set(n.id, { x: n.x, y: n.y });
+    }
+  }
+  function draw() {
+    for (const { e, line } of graphSim.edges) {
+      const ang = Math.atan2(e.d.y - e.s.y, e.d.x - e.s.x);
+      line.setAttribute('x1', e.s.x + Math.cos(ang) * e.s.r);
+      line.setAttribute('y1', e.s.y + Math.sin(ang) * e.s.r);
+      line.setAttribute('x2', e.d.x - Math.cos(ang) * (e.d.r + 6));
+      line.setAttribute('y2', e.d.y - Math.sin(ang) * (e.d.r + 6));
+    }
+    for (const { n, g } of graphSim.nodeEls) g.setAttribute('transform', `translate(${n.x},${n.y})`);
+  }
+  function svgPoint(ev) {
+    const pt = svg.createSVGPoint();
+    pt.x = ev.clientX; pt.y = ev.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return { x: ev.clientX, y: ev.clientY };
+    const sp = pt.matrixTransform(ctm.inverse());
+    return { x: sp.x, y: sp.y };
+  }
+  function pointerDown(ev, n) {
+    ev.preventDefault();
+    if (!graphSim) return;
+    const p = svgPoint(ev);
+    graphSim.drag = { node: n, moved: 0, lastX: p.x, lastY: p.y };
+    window.addEventListener('pointermove', pointerMove);
+    window.addEventListener('pointerup', pointerUp);
+    kick();
+  }
+  function pointerMove(ev) {
+    if (!graphSim || !graphSim.drag) return;
+    const p = svgPoint(ev), d = graphSim.drag;
+    d.moved += Math.abs(p.x - d.lastX) + Math.abs(p.y - d.lastY);
+    d.lastX = p.x; d.lastY = p.y;
+    d.node.x = p.x; d.node.y = p.y; d.node.vx = 0; d.node.vy = 0;
+    graphPos.set(d.node.id, { x: p.x, y: p.y });
+    kick();
+  }
+  function pointerUp() {
+    const d = graphSim && graphSim.drag;
+    window.removeEventListener('pointermove', pointerMove);
+    window.removeEventListener('pointerup', pointerUp);
+    if (graphSim) graphSim.drag = null;
+    if (d && d.moved < 5) openTask(d.node.id);   // clic limpio → abrir tarea
+  }
+  function cleanup() {
+    window.removeEventListener('pointermove', pointerMove);
+    window.removeEventListener('pointerup', pointerUp);
+  }
 }
 
 /* ---------------------------------------------------------- panel de tarea */
