@@ -67,23 +67,53 @@ function toast(msg, kind) {
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; setTimeout(() => t.remove(), 320); }, 2600);
 }
 
+/* ---------------------------------------------------------- token / modo compartir */
+// Si llegamos con ?token= (link de invitación), lo guardamos y limpiamos la URL.
+(function bootstrapToken() {
+  const u = new URL(location.href);
+  const t = u.searchParams.get('token');
+  if (t) {
+    localStorage.setItem('carmin_token', t);
+    u.searchParams.delete('token');
+    history.replaceState(null, '', u.pathname + u.search);
+  }
+})();
+function authToken() { return localStorage.getItem('carmin_token') || ''; }
+function withToken(headers) {
+  const t = authToken();
+  return t ? { ...headers, 'X-Carmin-Token': t } : (headers || {});
+}
+let IS_GUEST = false; // se setea tras loadState según S.viewer.role
+
 /* ---------------------------------------------------------- API */
 async function api(path, body) {
-  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const r = await fetch(path, { method: 'POST', headers: withToken({ 'Content-Type': 'application/json' }), body: JSON.stringify(body) });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { toast(data.error || 'Algo salió mal', 'err'); throw new Error(data.error || 'api'); }
   return data;
 }
 async function loadState() {
-  S = await (await fetch('/api/state')).json();
+  const r = await fetch('/api/state', { headers: withToken({}) });
+  if (r.status === 401) { showTokenGate(); throw new Error('token'); }
+  S = await r.json();
+  IS_GUEST = !!(S.viewer && S.viewer.role === 'guest');
+  document.body.classList.toggle('guest-mode', IS_GUEST);
   applyTheme();
 }
 async function loadMD(force) {
   if (MDdata && !force) return MDdata;
   mdLoading = true;
-  try { MDdata = await (await fetch('/api/md')).json(); }
+  try { MDdata = await (await fetch('/api/md', { headers: withToken({}) })).json(); }
   finally { mdLoading = false; }
   return MDdata;
+}
+function showTokenGate() {
+  document.body.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;font-family:var(--font);color:var(--text)">
+    <div style="max-width:380px;padding:32px">
+      <div style="font-size:40px;margin-bottom:12px">🔒</div>
+      <h1 style="font-size:22px;font-weight:900;margin-bottom:8px">Necesitas una invitación</h1>
+      <p style="color:var(--muted);line-height:1.5">Este tablero de Carmín está compartido en modo privado. Pídele al dueño el link con tu token de acceso.</p>
+    </div></div>`;
 }
 async function refresh() { await loadState(); render(); }
 
@@ -172,11 +202,13 @@ function renderSidebar() {
   const name = S.settings.user_name || 'Yo';
   let html = `
     <div class="logo"><span class="dot"></span> Carmín</div>
-    <button class="create-btn" onclick="createMenu(event)">${I.plus} Crear <span class="caret">${I.chevron}</span></button>
+    ${IS_GUEST
+      ? `<div class="guest-banner">👁 Invitado · solo lectura</div>`
+      : `<button class="create-btn" onclick="createMenu(event)">${I.plus} Crear <span class="caret">${I.chevron}</span></button>`}
     <button class="nav-item ${route.type === 'inicio' ? 'active' : ''}" onclick="nav('inicio')">${I.home} Inicio</button>
     <button class="nav-item ${route.type === 'all' ? 'active' : ''}" onclick="nav('all')">${I.all} Todas las tareas</button>
     <button class="nav-item ${route.type === 'md' ? 'active' : ''}" onclick="nav('md')">${I.folder} Proyectos</button>
-    <div class="nav-section">Espacios <button onclick="addSpacePrompt()" title="Nuevo espacio">${I.plus}</button></div>`;
+    <div class="nav-section">Espacios ${IS_GUEST ? '' : `<button onclick="addSpacePrompt()" title="Nuevo espacio">${I.plus}</button>`}</div>`;
   for (const sp of S.spaces) {
     const open = exp.has(sp.id);
     html += `
@@ -447,7 +479,7 @@ async function fetchSourceList(listId, force) {
   const cached = _srcCache[listId];
   if (!force && cached && Date.now() - cached.fetchedAt < 30000) return cached;
   try {
-    const r = await fetch('/api/source/fetch?list_id=' + listId);
+    const r = await fetch('/api/source/fetch?list_id=' + listId, { headers: withToken({}) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'error');
     _srcCache[listId] = { rows: d.rows || [], source_name: d.source_name, source_type: d.source_type, fetchedAt: Date.now() };

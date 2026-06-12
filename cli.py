@@ -207,26 +207,46 @@ def cmd_open(_args):
     print(f"  ● Carmín → {URL}")
 
 
-def cmd_stop(_args):
-    if not _server_up():
-        print("Carmín ya está apagado.")
-        return
+def _kill_server():
     try:
         out = subprocess.run(
             ['lsof', f'-iTCP:{PORT}', '-sTCP:LISTEN', '-Pn', '-t'],
             capture_output=True, text=True, timeout=2,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        _fail("No tengo `lsof` para encontrar el proceso. Apágalo a mano.")
+        return False
     pids = [int(p) for p in out.stdout.split() if p.strip().isdigit()]
-    if not pids:
-        _fail(f"No encuentro el proceso que escucha en :{PORT}.")
     for pid in pids:
         try:
             os.kill(pid, 15)
         except ProcessLookupError:
             pass
+    return bool(pids)
+
+
+def cmd_stop(_args):
+    if not _server_up():
+        print("Carmín ya está apagado.")
+        return
+    if not _kill_server():
+        _fail(f"No encuentro el proceso que escucha en :{PORT}.")
     _ok("Carmín apagado.")
+
+
+def cmd_share(_args):
+    """Arranca Carmín en modo compartir (red, con tokens) para invitar a alguien."""
+    # Si ya hay un server local normal corriendo, hay que reiniciarlo en modo share.
+    if _server_up():
+        print(f"{C['dim']}Reiniciando Carmín en modo compartir…{C['reset']}")
+        _kill_server()
+        time.sleep(0.6)
+    # Lanzar en foreground para que el usuario vea los links y los tokens.
+    env = dict(os.environ, CARMIN_SHARE="1")
+    try:
+        subprocess.run([sys.executable, os.path.join(BASE, "app.py"),
+                        "--share", "--no-browser", "--port", str(PORT)], env=env)
+    except KeyboardInterrupt:
+        pass
 
 
 def cmd_ls(args):
@@ -509,6 +529,7 @@ def cmd_ayuda(_args):
 
 {C['dim']}Abrir la app:{C['reset']}
   carmin                          arranca y abre en el navegador
+  carmin share                    compartir por red (Tailscale) con tokens
   carmin stop                     apaga el servidor
 
 {C['dim']}Ver:{C['reset']}
@@ -537,6 +558,7 @@ def cmd_ayuda(_args):
 COMMANDS = {
     'open': cmd_open, '': cmd_open,
     'stop': cmd_stop,
+    'share': cmd_share, 'compartir': cmd_share,
     'ls': cmd_ls, 'list': cmd_ls,
     'info': cmd_info,
     'nueva': cmd_nueva, 'new': cmd_nueva, 'add': cmd_nueva,

@@ -60,11 +60,38 @@ A partir de ahí, cada sesión de Claude consulta tu tablero, marca progreso y d
 
 El archivo `CLAUDE.md` dentro de este repo contiene la guía completa: cuándo dejar notas, qué reglas seguir, cómo evitar marcar como hecho lo que no terminó.
 
-## Privacidad y seguridad
+## Compartir tu tablero (modo invitado)
 
-Carmín solo escucha en `127.0.0.1` (tu propia máquina). Nadie más puede verlo,
-ni siquiera en tu misma red WiFi. Compartir con invitados llegará en una
-versión futura, como opción explícita.
+Por defecto Carmín solo escucha en `127.0.0.1` — nadie más puede verlo. Cuando
+quieras mostrarle tu tablero a alguien (sin darle acceso a tu computadora):
+
+```bash
+carmin share
+```
+
+Esto:
+1. Pone Carmín a escuchar en tu red **a través de [Tailscale](https://tailscale.com)**
+   (VPN privada gratis — instálala en ambas computadoras).
+2. Genera dos links con token:
+   - **Dueño** (tú): control total.
+   - **Invitado**: solo lectura + puede dejar comentarios/sugerencias. No puede
+     crear, editar ni borrar nada.
+3. Le pasas el link de invitado a la otra persona. Abre el tablero en su
+   navegador, ve cómo va tu proyecto y te deja notas — sin instalar nada ni
+   tener acceso a tus archivos.
+
+Tus datos siguen viviendo solo en tu máquina; el invitado los ve a través de la
+conexión cifrada de Tailscale mientras tú tengas Carmín abierto.
+
+### Seguridad
+
+- Los tokens viven en `~/carmin/credentials.json` (en `.gitignore`, permisos `600`),
+  nunca se suben al repo ni se exponen al navegador.
+- En modo compartir, cada petición a la API exige un token válido (401 sin él).
+- Los invitados solo pueden leer y comentar (el servidor bloquea cualquier
+  escritura con 403, no solo se ocultan los botones).
+- Las fuentes externas no pueden apuntar a hosts internos de tu red ni a
+  endpoints de metadata cloud (protección contra SSRF).
 
 ## Hoja de ruta
 
