@@ -12,3 +12,6 @@ credentials.json
 .DS_Store
 __pycache__/
 *.pyc
+
+# Artefactos locales de Claude Code (worktrees, launch.json del preview)
+.claude/
