@@ -233,14 +233,14 @@ body.sidebar-collapsed #sidebar { opacity: 0; padding-left: 0; padding-right: 0;
 /* ---------------------------------------------------------- topbar (tabs tipo ClickUp) */
 #topbar {
   display: flex; flex-direction: column; gap: 0;
-  padding: var(--space-4) var(--space-8) 0;
+  padding: 20px var(--space-8) 0;
   border-bottom: 1px solid var(--glass-border);
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
   position: relative; z-index: 6;
 }
 /* Vistas sin pestañas (Inicio, Proyectos): el botón "Crear" necesita aire abajo también */
-#topbar.no-tabs { padding-bottom: var(--space-4); }
+#topbar.no-tabs { padding-bottom: 20px; }
 .topbar-row { display: flex; align-items: center; gap: var(--space-3); min-height: 48px; }
 .topbar-toggle { flex: none; margin-left: -6px; }
 .crumb { display: flex; align-items: center; gap: 8px; font-weight: 900; font-size: 17px; letter-spacing: -0.2px; white-space: nowrap; }
@@ -1219,3 +1219,21 @@ body.editor-mode .tab-add { display: none !important; }  /* no agregar vistas */
 .ui-dialog { width: 440px; }
 .ui-dialog-msg { color: var(--muted); line-height: 1.55; margin: calc(-1 * var(--space-2)) 0 var(--space-6); }
 .ui-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; }
+
+/* --- panel compartir / colaborar --- */
+.share-warn {
+  background: color-mix(in srgb, #F5A524 14%, transparent); color: #F5A524;
+  border: 1px solid color-mix(in srgb, #F5A524 28%, transparent);
+  border-radius: var(--radius-md); padding: 10px 12px; margin-bottom: 14px; font-size: 13px; line-height: 1.5;
+}
+.share-warn a, .empty a { color: inherit; text-decoration: underline; }
+.share-row { margin-bottom: 14px; }
+.share-role { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; font-size: 13.5px; }
+.share-dot { width: 9px; height: 9px; border-radius: var(--radius-full); flex: none; }
+.share-link { display: flex; gap: 8px; }
+.share-link input {
+  flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 8px 10px; font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, Menlo, monospace;
+}
+.fb-row.fb-dim { opacity: .45; }

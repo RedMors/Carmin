@@ -26,6 +26,7 @@ const I = {
   edit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
   graph: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.6 7.8 10.4 16M16.4 7.8 13.6 16M8 6h8"/></svg>',
   sidebar: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>',
+  share: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5 8.6 10.5"/></svg>',
 };
 
 /* ---------------------------------------------------------- estado global */
@@ -250,6 +251,7 @@ function renderSidebar() {
   html += `
     <div class="sidebar-foot">
       <div class="who"><span class="avatar">${esc(name[0] || 'Y').toUpperCase()}</span> ${esc(name)}</div>
+      ${isOwner() ? `<button class="icon-btn" onclick="openShareModal()" title="Compartir / Invitar a colaborar">${I.share}</button>` : ''}
       <button class="icon-btn" onclick="quickTheme()" title="Cambiar tema">${(S.settings.theme || 'dark') === 'dark' ? I.sun : I.moon}</button>
       ${isOwner() ? `<button class="icon-btn" onclick="openSettings()" title="Ajustes">${I.gear}</button>` : ''}
     </div>`;
@@ -1392,9 +1394,12 @@ function viewMD() {
     <div class="view-sub">Carmín vigila los archivos .md de estas carpetas: qué cambió y qué sigue pendiente.</div>
     <div id="md-list">${mdSkeleton()}${mdSkeleton()}</div>
     <div class="add-folder">
-      <input id="folder-input" placeholder="Ruta de la carpeta, ej: ~/Trip-App" onkeydown="if(event.key==='Enter')addFolderRow()">
-      <button class="btn btn-primary" onclick="addFolderRow()">${I.plus} Vigilar carpeta</button>
-    </div>`;
+      <button class="btn btn-primary" onclick="openFolderBrowser()">${I.folder} Elegir carpeta…</button>
+      <span class="faint" style="font-size:12px">o pega la ruta:</span>
+      <input id="folder-input" placeholder="ej: ~/Trip-App" onkeydown="if(event.key==='Enter')addFolderRow()">
+      <button class="btn btn-soft" onclick="addFolderRow()">${I.plus} Vigilar</button>
+    </div>
+    <div class="view-sub" style="margin-top:8px">¿Buscas conectar un repo de GitHub? Eso es una <strong>fuente</strong> (lista en vivo), no una carpeta: usa <strong>Crear → Conectar fuente</strong>.</div>`;
   fillMDView();
 }
 async function fillMDView() {
@@ -1605,14 +1610,29 @@ function wirePanelDropPaste(panel, taskId) {
 }
 
 /* ---------------------------------------------------------- explorador de archivos local */
-let _fb = { taskId: null, data: null, loading: false };
+let _fb = { taskId: null, mode: 'attach', data: null, loading: false };
 function openFileBrowser(taskId) {
-  _fb = { taskId, data: null, loading: true };
+  _fb = { taskId, mode: 'attach', data: null, loading: true };
   showModal(`
     <h2>Elegir de mi PC</h2>
     <div class="faint" style="font-size:13px;margin-bottom:var(--space-3)">
       Navega tu disco y elige un archivo o carpeta para trabajar desde ahí. Carmín guarda una
       <strong>referencia</strong> (no copia el archivo) y puede abrirlo en su app nativa.
+    </div>
+    <div id="fb-body">${mdSkeleton()}${mdSkeleton()}</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:var(--space-3)">
+      <button class="btn btn-soft" onclick="closeModal()">Cerrar</button>
+    </div>`);
+  fbNav('');
+}
+// Mismo explorador, pero para elegir una CARPETA a vigilar (vista Proyectos).
+function openFolderBrowser() {
+  _fb = { taskId: null, mode: 'folder', data: null, loading: true };
+  showModal(`
+    <h2>Elegir carpeta a vigilar</h2>
+    <div class="faint" style="font-size:13px;margin-bottom:var(--space-3)">
+      Navega tu disco y elige la carpeta de un proyecto. Carmín mostrará qué archivos
+      <code>.md</code> cambiaron y qué pendientes (<code>- [ ]</code>) siguen sin hacer.
     </div>
     <div id="fb-body">${mdSkeleton()}${mdSkeleton()}</div>
     <div style="display:flex;justify-content:flex-end;margin-top:var(--space-3)">
@@ -1639,39 +1659,63 @@ function renderFileBrowser() {
   const el = $('#fb-body');
   if (!el || !_fb.data) return;
   const d = _fb.data;
+  const folderMode = _fb.mode === 'folder';
   const crumbs = (d.path || '').split('/').filter(Boolean);
   const shortcuts = (d.shortcuts || []).map((s, i) =>
     `<button class="fb-chip ${s.path === d.path ? 'on' : ''}" onclick="fbNav(_fb.data.shortcuts[${i}].path)">${esc(s.label)}</button>`).join('');
-  const rows = (d.entries || []).map((e, i) => `
-    <div class="fb-row" ondblclick="fbActivate(${i})">
+  const rows = (d.entries || []).map((e, i) => {
+    if (folderMode && !e.is_dir) {
+      // En modo carpeta, los archivos solo se listan (atenuados), no se eligen.
+      return `<div class="fb-row fb-dim"><span class="fb-ic">${fileIcon(e.ext, false)}</span>
+        <span class="fb-name" title="${esc(e.name)}">${esc(e.name)}</span><span class="fb-meta faint">${humanSize(e.size)}</span></div>`;
+    }
+    return `<div class="fb-row" ondblclick="fbActivate(${i})">
       <span class="fb-ic">${fileIcon(e.ext, e.is_dir)}</span>
       <span class="fb-name" title="${esc(e.name)}">${esc(e.name)}</span>
       <span class="fb-meta faint">${e.is_dir ? '' : humanSize(e.size)}</span>
       ${e.is_dir
         ? `<button class="fb-act" onclick="fbNav(_fb.data.entries[${i}].path)">Abrir ▸</button>
-           <button class="fb-pick" onclick="fbPick(${i})">Elegir carpeta</button>`
+           <button class="fb-pick" onclick="fbPick(${i})">${folderMode ? 'Vigilar esta' : 'Elegir carpeta'}</button>`
         : `<button class="fb-pick" onclick="fbPick(${i})">Elegir</button>`}
-    </div>`).join('');
+    </div>`;
+  }).join('');
+  // En modo carpeta, además se puede vigilar la carpeta ACTUAL.
+  const pickCurrent = folderMode
+    ? `<button class="fb-pick" onclick="fbPickPath(_fb.data.path)" title="Vigilar la carpeta abierta">Vigilar esta carpeta</button>`
+    : '';
   el.innerHTML = `
     <div class="fb-shortcuts">${shortcuts}</div>
     <div class="fb-pathbar">
       <button class="fb-up" onclick="fbUp()" ${d.parent ? '' : 'disabled'} title="Subir un nivel">↑</button>
       <span class="fb-path">/${crumbs.map(esc).join(' <span class="faint">/</span> ')}</span>
+      ${pickCurrent}
     </div>
     <div class="fb-list">${rows || '<div class="faint" style="padding:16px;text-align:center">Carpeta vacía</div>'}</div>`;
 }
 function fbActivate(i) {
   const e = _fb.data.entries[i];
   if (!e) return;
-  if (e.is_dir) fbNav(e.path); else fbPick(i);
+  if (e.is_dir) { _fb.mode === 'folder' ? fbNav(e.path) : fbNav(e.path); }
+  else if (_fb.mode !== 'folder') fbPick(i);
 }
 async function fbPick(i) {
   const e = _fb.data.entries[i];
   if (!e) return;
-  await api('/api/attachment', { action: 'link_local', task_id: _fb.taskId, path: e.path });
-  closeModal();
-  toast('Archivo vinculado ✓');
-  await refresh();
+  await fbPickPath(e.path);
+}
+async function fbPickPath(path) {
+  if (_fb.mode === 'folder') {
+    await api('/api/folder', { action: 'create', path });
+    closeModal();
+    toast('Carpeta agregada ✓');
+    MDdata = null;
+    await refresh();
+  } else {
+    await api('/api/attachment', { action: 'link_local', task_id: _fb.taskId, path });
+    closeModal();
+    toast('Archivo vinculado ✓');
+    await refresh();
+  }
 }
 
 /* ---------------------------------------------------------- relaciones entre tareas */
@@ -2047,11 +2091,6 @@ function openAddViewMenu(ev) {
     { id: 'grafo', name: 'Grafo', icon: I.graph, desc: 'Red de tareas conectadas por relaciones' },
     { id: 'documento', name: 'Documento', icon: I.file, desc: 'Página Markdown por lista, con imágenes' },
   ];
-  const soon = [
-    { id: 'gantt', name: 'Gantt', emoji: '📊', desc: 'Línea de tiempo con dependencias' },
-    { id: 'cronograma', name: 'Cronograma', emoji: '🗓', desc: 'Timeline horizontal por fechas' },
-    { id: 'formulario', name: 'Formulario', emoji: '📝', desc: 'Capturar tareas vía formulario' },
-  ];
   const renderItem = (v) => {
     const isActive = active.includes(v.id);
     return `<button class="pop-item pop-view-item ${isActive ? 'on' : ''}" onclick="toggleViewInline('${v.id}')" title="${isActive ? 'Click para ocultar' : 'Click para activar'}">
@@ -2065,17 +2104,8 @@ function openAddViewMenu(ev) {
     </button>`;
   };
   popover(ev, `
-    <div class="pop-section">Vistas disponibles</div>
-    ${available.map(renderItem).join('')}
-    <div class="pop-section">Próximamente</div>
-    ${soon.map(v => `
-      <div class="pop-item pop-item-soon" title="Pronto">
-        <span class="pop-icon" style="background:var(--surface2);color:var(--faint);font-size:14px">${v.emoji}</span>
-        <span style="flex:1">
-          <div class="pop-title" style="opacity:.75">${v.name}</div>
-          <div class="pop-sub">${v.desc}</div>
-        </span>
-      </div>`).join('')}`);
+    <div class="pop-section">Vistas</div>
+    ${available.map(renderItem).join('')}`);
 }
 
 async function toggleViewInline(v) {
@@ -2536,6 +2566,60 @@ async function cfDraftSave(listId) {
   } catch (e) {}
 }
 
+/* ---------------------------------------------------------- compartir / colaborar */
+async function openShareModal() {
+  showModal(`<h2>${I.share} Compartir / Colaborar</h2>
+    <div id="share-body">${mdSkeleton()}${mdSkeleton()}${mdSkeleton()}</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:var(--space-3)"><button class="btn btn-soft" onclick="closeModal()">Cerrar</button></div>`);
+  let d;
+  try {
+    const r = await fetch('/api/share', { headers: withToken({}) });
+    d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'error');
+  } catch (e) {
+    const el = $('#share-body'); if (el) el.innerHTML = emptyState('⚠️', 'No pude cargar', esc(e.message || ''));
+    return;
+  }
+  const el = $('#share-body'); if (!el) return;
+  if (!d.share) {
+    el.innerHTML = `<div class="empty"><div class="big">🔗</div>
+      <div style="font-weight:900">Compartir no está activo</div>
+      <div class="hint" style="text-align:left;line-height:1.7;margin-top:10px">
+        Para que alguien más vea tu tablero o colabore, abre Carmín en <strong>modo compartir</strong>:<br>
+        1. Instala <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a> (VPN privada gratis) en tu Mac y en la de tu compañero.<br>
+        2. En la terminal corre: <code>carmin share</code><br>
+        3. Vuelve a abrir este panel — aparecerán los links de <strong>Editor</strong> e <strong>Invitado</strong> para enviar.
+      </div></div>`;
+    return;
+  }
+  const roles = [
+    { k: 'editor', name: 'Editor', desc: 'Crea y edita tareas, relaciones y documento', color: '#34C77B' },
+    { k: 'guest', name: 'Invitado', desc: 'Solo lectura + comentarios', color: '#4E9CF5' },
+    { k: 'owner', name: 'Dueño (tú)', desc: 'Control total — no lo compartas', color: '#E0314F' },
+  ];
+  el.innerHTML = `
+    ${!d.tailscale_ip ? `<div class="share-warn">⚠️ No detecté Tailscale. Instálalo en ambas computadoras (<a href="https://tailscale.com/download" target="_blank" rel="noopener">tailscale.com/download</a>) para que los links funcionen.</div>` : ''}
+    <div class="faint" style="font-size:13px;margin-bottom:var(--space-4)">Pásale a tu compañero el link de <strong>Editor</strong> para colaborar, o el de <strong>Invitado</strong> solo para mostrar avances.</div>
+    ${roles.map(r => {
+      const link = d.links[r.k];
+      return `<div class="share-row">
+        <div class="share-role"><span class="share-dot" style="background:${r.color}"></span><strong>${r.name}</strong><span class="faint"> · ${r.desc}</span></div>
+        <div class="share-link">
+          <input readonly value="${esc(link || '(activa Tailscale para generar el link)')}" onclick="this.select()">
+          ${link ? `<button class="btn btn-soft" onclick="copyShare(this)">Copiar</button>` : ''}
+        </div>
+      </div>`;
+    }).join('')}`;
+}
+function copyShare(btn) {
+  const inp = btn.parentElement.querySelector('input');
+  if (!inp) return;
+  navigator.clipboard.writeText(inp.value).then(() => {
+    const old = btn.textContent; btn.textContent = 'Copiado ✓';
+    setTimeout(() => { btn.textContent = old; }, 1500);
+  }).catch(() => { inp.select(); toast('Selecciona y copia con ⌘C'); });
+}
+
 function openSettings() {
   const theme = S.settings.theme || 'dark';
   const accent = (S.settings.accent || '#E0314F').toLowerCase();
@@ -2563,6 +2647,7 @@ function openSettings() {
       <button class="btn btn-ghost" onclick="addStatus()" style="margin-top:6px">${I.plus} Nuevo estado</button></div>
     <div class="sec" id="folder-edit-sec"><h4>Carpetas vigiladas</h4>
       ${renderFolderEditList()}
+      <button class="btn btn-ghost" onclick="closeModal();openFolderBrowser()" style="margin-top:6px">${I.folder} Elegir carpeta…</button>
     </div>
     <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary" onclick="closeModal()">Listo</button></div>`);
 }

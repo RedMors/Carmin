@@ -1435,6 +1435,21 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/creds":
                 # Listar refs (sin valores) — útil para la UI
                 return self._send(200, _creds("list", {}))
+            if p == "/api/share":
+                # Links de invitación. SOLO el dueño los ve (contienen tokens).
+                if self._role() != "owner":
+                    return self._send(403, {"error": "solo el dueño puede ver los links de invitación"})
+                if not SHARE_MODE:
+                    return self._send(200, {"share": False})
+                tokens = get_share_tokens(create=True)
+                ip = tailscale_ip()
+                port = self.server.server_address[1]
+                mk = lambda role: ("http://%s:%d/?token=%s" % (ip, port, tokens[role])) if ip else ""
+                return self._send(200, {
+                    "share": True, "tailscale_ip": ip, "port": port,
+                    "links": {"owner": mk("owner"), "editor": mk("editor"), "guest": mk("guest")},
+                    "tokens": {"owner": tokens["owner"], "editor": tokens["editor"], "guest": tokens["guest"]},
+                })
             if p == "/api/attachment":
                 from urllib.parse import parse_qs
                 qs = parse_qs(urlparse(self.path).query)
