@@ -25,6 +25,7 @@ Se abre solo en tu navegador en `http://127.0.0.1:4848`. Para apagarlo: `Ctrl+C`
 ## Qué incluye
 
 - ✅ **Espacios → Listas → Tareas**, como ClickUp
+- ✅ **Listas como tipos**: una lista puede guardar *contactos*, *viajes* o *gastos* (no solo tareas) — nómbrale su ítem y usa los campos custom como esquema
 - ✅ Vistas **Lista, Tablero (Kanban con drag & drop) y Calendario** — activa solo las que uses
 - ✅ **Inicio**: tu día de un vistazo (vencidas, para hoy, urgentes)
 - ✅ **Proyectos**: vigila carpetas con archivos `.md` — qué cambió, qué checkbox sigue pendiente, y el estado git (cambios sin commit / commits sin subir)

@@ -155,6 +155,15 @@ const LINK_KINDS = [
 ];
 const LINK_LABEL = Object.fromEntries(LINK_KINDS.map(k => [k[0], k[1]]));
 const INVERSE_KIND = { blocks: 'blocked', blocked: 'blocks', rel: 'rel', dup: 'dup' };
+
+// "Tipo" de ítem de una lista: contacto, viaje, gasto… ('' = tarea por defecto).
+function itemNoun(list, cap) {
+  const n = ((list && list.item_noun) ? String(list.item_noun).trim() : '') || 'tarea';
+  return cap ? n.charAt(0).toUpperCase() + n.slice(1) : n;
+}
+function itemNounById(listId, cap) { return itemNoun(listById(listId), cap); }
+// "Añadir X" es género-neutro → evita el lío Nuevo/Nueva en español.
+const addItemLabel = (list) => '+ Añadir ' + itemNoun(list);
 const isDone = (t) => statusById(t.status_id).kind === 'done';
 const enabledViews = () => { try { const v = JSON.parse(S.settings.views || '[]'); return v.length ? v : ['lista']; } catch (e) { return ['lista', 'tablero', 'calendario']; } };
 
@@ -819,7 +828,7 @@ function quickAddRow(statusId, showListCol) {
   const listId = route.type === 'list' ? route.listId : (S.spaces[0] && S.spaces[0].lists[0] ? S.spaces[0].lists[0].id : null);
   if (!listId) return '';
   return `<div class="quick-add-row" data-status="${statusId}">${I.plus}
-    <input placeholder="+ Añadir tarea" onkeydown="qaKey(event,${listId},${statusId})"></div>`;
+    <input placeholder="${esc(addItemLabel(listById(listId)))}" onkeydown="qaKey(event,${listId},${statusId})"></div>`;
 }
 
 /* ---------------------------------------------------------- vista: tabla (spreadsheet) */
@@ -856,7 +865,7 @@ function viewTable() {
   if (route.type === 'list') {
     html += `<div class="tv-row tv-add">
       <span></span>
-      <input placeholder="+ Añadir tarea" onkeydown="qaKey(event,${route.listId},null)">
+      <input placeholder="${esc(addItemLabel(listById(route.listId)))}" onkeydown="qaKey(event,${route.listId},null)">
     </div>`;
   }
   html += '</div>';
@@ -1758,18 +1767,30 @@ function newTaskModal() {
   for (const sp of S.spaces) for (const l of sp.lists) lists.push({ ...l, space: sp.name });
   if (!lists.length) { toast('Primero crea un espacio con una lista', 'err'); return; }
   const sel = route.type === 'list' ? route.listId : lists[0].id;
+  const selList = listById(sel) || lists[0];
+  const noun = itemNoun(selList), cap = itemNoun(selList, true);
+  const ph = noun === 'tarea' ? '¿Qué hay que hacer?' : cap + '…';
   showModal(`
-    <h2>Nueva tarea</h2>
-    <div class="sec"><input type="text" id="nt-title" placeholder="¿Qué hay que hacer?" onkeydown="if(event.key==='Enter')createFromModal()"></div>
+    <h2 id="nt-h">Crear ${esc(cap)}</h2>
+    <div class="sec"><input type="text" id="nt-title" placeholder="${esc(ph)}" onkeydown="if(event.key==='Enter')createFromModal()"></div>
     <div class="sec"><h4>Lista</h4>
-      <select id="nt-list" style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px">
-        ${lists.map(l => `<option value="${l.id}" ${l.id === sel ? 'selected' : ''}>${esc(l.space)} / ${esc(l.name)}</option>`).join('')}
+      <select id="nt-list" onchange="ntListChanged()" style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px">
+        ${lists.map(l => `<option value="${l.id}" ${l.id === sel ? 'selected' : ''}>${esc(l.space)} / ${esc(l.name)}${l.item_noun ? ' · ' + esc(itemNoun(l)) : ''}</option>`).join('')}
       </select></div>
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button class="btn btn-soft" onclick="closeModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="createFromModal()">${I.plus} Crear tarea</button>
+      <button class="btn btn-primary" id="nt-create" onclick="createFromModal()">${I.plus} Crear ${esc(noun)}</button>
     </div>`);
   setTimeout(() => { const e = $('#nt-title'); if (e) e.focus(); }, 60);
+}
+// Al cambiar la lista en el modal, refleja su "tipo" (contacto/viaje/gasto…).
+function ntListChanged() {
+  const sel = $('#nt-list'); if (!sel) return;
+  const l = listById(Number(sel.value));
+  const noun = itemNoun(l), cap = itemNoun(l, true);
+  const h = $('#nt-h'); if (h) h.textContent = 'Crear ' + cap;
+  const btn = $('#nt-create'); if (btn) btn.innerHTML = I.plus + ' Crear ' + esc(noun);
+  const ti = $('#nt-title'); if (ti && !ti.value) ti.placeholder = noun === 'tarea' ? '¿Qué hay que hacer?' : cap + '…';
 }
 
 /* ---------------------------------------------------------- menú "+ Vista" inline */
@@ -2102,9 +2123,16 @@ function renderCustomFieldsEditor(l) {
       ${f.type === 'dropdown' ? cfDropdownOptions(f, i) : ''}
     </div>`).join('');
   showModal(`
-    <h2>Columnas personalizadas — ${esc(l.name)}</h2>
-    <div class="faint" style="font-size:13px;margin-bottom:var(--space-4)">
-      Añade campos propios de esta lista: presupuesto, esfuerzo, enlace al PR, etc. Aparecen en la vista <strong>Tabla</strong> y en el panel de la tarea.
+    <h2>Tipo y columnas — ${esc(l.name)}</h2>
+    <div class="sec">
+      <h4>¿Qué guarda esta lista?</h4>
+      <input type="text" id="cf-item-noun" value="${esc(l.item_noun || '')}" placeholder="tarea (por defecto) — ej: contacto, viaje, gasto" class="cf-input" style="width:100%" maxlength="30">
+      <div class="faint" style="font-size:12px;margin-top:6px">
+        En singular y minúscula. Convierte la lista en una mini-base de datos: la UI dirá “Añadir ${esc(itemNoun(l))}” y los campos de abajo son su esquema.
+      </div>
+    </div>
+    <div class="faint" style="font-size:13px;margin:var(--space-4) 0 var(--space-2)">
+      <strong>Columnas</strong> — campos propios de cada ${esc(itemNoun(l))}: presupuesto, email, enlace, etc. Aparecen en la vista <strong>Tabla</strong> y en el panel.
     </div>
     <div class="sec" id="cf-rows">${rows || '<div class="faint" style="padding:12px 0">Sin columnas. Añade la primera ↓</div>'}</div>
     <div class="sec">
@@ -2178,11 +2206,13 @@ async function cfDraftSave(listId) {
   for (const f of _cfDraft) {
     if (!String(f.name || '').trim()) { toast('Cada columna necesita un nombre', 'err'); return; }
   }
+  const nounEl = document.getElementById('cf-item-noun');
+  const item_noun = nounEl ? nounEl.value.trim().slice(0, 30) : '';
   try {
-    await api('/api/list', { action: 'set_fields', id: listId, custom_fields: _cfDraft });
+    await api('/api/list', { action: 'set_fields', id: listId, custom_fields: _cfDraft, item_noun });
     _cfDraft = null;
     closeModal();
-    toast('Columnas guardadas ✓');
+    toast('Guardado ✓');
     await refresh();
   } catch (e) {}
 }

@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS lists(
   name          TEXT NOT NULL,
   pos           INTEGER NOT NULL DEFAULT 0,
   custom_fields TEXT NOT NULL DEFAULT '[]', -- JSON: [{id,name,type,options?,width?}]
+  item_noun     TEXT NOT NULL DEFAULT '',   -- "tipo" de ítem: contacto, viaje, gasto… ('' = tarea)
   source_id     INTEGER REFERENCES sources(id) ON DELETE SET NULL,
   source_path   TEXT NOT NULL DEFAULT '',   -- ej: "trip_posts?visibility=eq.public&limit=50"
   source_mapping TEXT NOT NULL DEFAULT '{}' -- JSON: {title:'name', status:'stage', due:'closeDate'}
@@ -157,6 +158,7 @@ SOFT_MIGRATIONS = [
     "ALTER TABLE lists ADD COLUMN source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL",
     "ALTER TABLE lists ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE lists ADD COLUMN source_mapping TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE lists ADD COLUMN item_noun TEXT NOT NULL DEFAULT ''",
 ]
 
 
@@ -787,8 +789,12 @@ def _list(con, action, b):
                     (b.get("space_id"), name[:60], pos))
         return {"ok": True, "id": con.execute("SELECT last_insert_rowid() i").fetchone()["i"]}
     if action == "update":
-        con.execute("UPDATE lists SET name=? WHERE id=?",
-                    (str(b.get("name", "")).strip()[:60], b.get("id")))
+        if "name" in b:
+            con.execute("UPDATE lists SET name=? WHERE id=?",
+                        (str(b.get("name", "")).strip()[:60], b.get("id")))
+        if "item_noun" in b:
+            con.execute("UPDATE lists SET item_noun=? WHERE id=?",
+                        (str(b.get("item_noun", "")).strip()[:30], b.get("id")))
         return {"ok": True}
     if action == "set_fields":
         list_id = b.get("id")
@@ -806,6 +812,10 @@ def _list(con, action, b):
             cleaned.append(cf)
         con.execute("UPDATE lists SET custom_fields=? WHERE id=?",
                     (json.dumps(cleaned), list_id))
+        # El "tipo" de ítem (contacto/viaje/gasto) se edita junto al esquema.
+        if "item_noun" in b:
+            con.execute("UPDATE lists SET item_noun=? WHERE id=?",
+                        (str(b.get("item_noun", "")).strip()[:30], list_id))
         return {"ok": True, "custom_fields": cleaned}
     if action == "delete":
         con.execute("DELETE FROM lists WHERE id=?", (b.get("id"),))
