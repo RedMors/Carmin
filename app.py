@@ -405,20 +405,26 @@ def _save_creds(creds):
 
 
 def get_share_tokens(create=False):
-    """Devuelve {'owner': '...', 'guest': '...'} desde credentials.json __share__.
-    Si create=True y no existen, los genera y guarda."""
+    """Devuelve {'owner','editor','guest'} desde credentials.json __share__.
+    owner = control total · editor = edita tareas/relaciones/doc · guest = solo lectura + comentar.
+    Si create=True, genera los que falten (preserva los existentes)."""
     import secrets
     creds = _load_creds()
     share = creds.get("__share__") or {}
-    if create and (not share.get("owner") or not share.get("guest")):
-        share = {"owner": secrets.token_urlsafe(18), "guest": secrets.token_urlsafe(18)}
-        creds["__share__"] = share
-        _save_creds(creds)
+    if create:
+        changed = False
+        for role in ("owner", "editor", "guest"):
+            if not share.get(role):
+                share[role] = secrets.token_urlsafe(18)
+                changed = True
+        if changed:
+            creds["__share__"] = share
+            _save_creds(creds)
     return share
 
 
 def role_for_token(token):
-    """owner | guest | None. En modo local (sin share) todo es owner."""
+    """owner | editor | guest | None. En modo local (sin share) todo es owner."""
     if not SHARE_MODE:
         return "owner"
     if not token:
@@ -426,6 +432,8 @@ def role_for_token(token):
     share = get_share_tokens()
     if token == share.get("owner"):
         return "owner"
+    if token == share.get("editor"):
+        return "editor"
     if token == share.get("guest"):
         return "guest"
     return None
@@ -1313,8 +1321,20 @@ INLINE_MIME_PREFIXES = ("image/", "text/")
 INLINE_MIME_EXACT = {"application/pdf"}
 
 
-# Acciones de escritura que un invitado SÍ puede hacer (solo comentar/sugerir).
+# Acciones de escritura que un invitado (solo lectura) SÍ puede hacer: comentar/sugerir.
 GUEST_WRITE_ALLOWED = {("/api/comment", "create")}
+
+# Un editor (colaborador) puede, además: crear/editar tareas, vincularlas, editar el
+# documento y subir imágenes. NO puede: borrar tareas, tocar espacios/listas/estados/
+# metas/fuentes/ajustes, vincular archivos locales ni abrir/navegar tu disco.
+EDITOR_WRITE_ALLOWED = GUEST_WRITE_ALLOWED | {
+    ("/api/task", "create"),
+    ("/api/task", "update"),
+    ("/api/link", "create"),
+    ("/api/link", "delete"),
+    ("/api/doc", "save"),
+    ("/api/attachment", "upload"),
+}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1451,8 +1471,11 @@ class Handler(BaseHTTPRequestHandler):
             role = self._role()
             if not role:
                 return self._send(401, {"error": "token requerido o inválido"})
-            if role == "guest" and (p, body.get("action")) not in GUEST_WRITE_ALLOWED:
+            act = (p, body.get("action"))
+            if role == "guest" and act not in GUEST_WRITE_ALLOWED:
                 return self._send(403, {"error": "Modo invitado: solo lectura. Puedes comentar, no editar."})
+            if role == "editor" and act not in EDITOR_WRITE_ALLOWED:
+                return self._send(403, {"error": "Como editor puedes trabajar las tareas, pero esto solo lo cambia el dueño."})
         try:
             out = api_post(p, body)
             self._send(200, out if out is not None else {"ok": True})
@@ -1510,7 +1533,9 @@ def main():
         print("  \033[1mMODO COMPARTIR ACTIVO\033[0m (escuchando en la red)")
         print("  Tú (control total):")
         print("    http://%s:%d/?token=%s" % (host_for_share, port, tokens["owner"]))
-        print("  Invitado (solo lectura + comentarios) — comparte este link:")
+        print("  Editor (crea/edita tareas, relaciones y documento) — para colaborar:")
+        print("    http://%s:%d/?token=%s" % (host_for_share, port, tokens["editor"]))
+        print("  Invitado (solo lectura + comentarios) — para mostrar avances:")
         print("    http://%s:%d/?token=%s" % (host_for_share, port, tokens["guest"]))
         if not tsip:
             print("")

@@ -85,7 +85,11 @@ function withToken(headers) {
   const t = authToken();
   return t ? { ...headers, 'X-Carmin-Token': t } : (headers || {});
 }
-let IS_GUEST = false; // se setea tras loadState según S.viewer.role
+let IS_GUEST = false;   // solo lectura + comentar
+let IS_EDITOR = false;  // colabora: edita tareas/relaciones/documento, no la estructura
+// Helpers de permiso: owner = todo; editor = tareas; guest = lectura.
+const canEdit = () => !IS_GUEST;            // owner o editor pueden trabajar tareas
+const isOwner = () => !IS_GUEST && !IS_EDITOR;
 
 /* ---------------------------------------------------------- API */
 async function api(path, body) {
@@ -98,8 +102,11 @@ async function loadState() {
   const r = await fetch('/api/state', { headers: withToken({}) });
   if (r.status === 401) { showTokenGate(); throw new Error('token'); }
   S = await r.json();
-  IS_GUEST = !!(S.viewer && S.viewer.role === 'guest');
+  const _role = S.viewer && S.viewer.role;
+  IS_GUEST = _role === 'guest';
+  IS_EDITOR = _role === 'editor';
   document.body.classList.toggle('guest-mode', IS_GUEST);
+  document.body.classList.toggle('editor-mode', IS_EDITOR);
   applyTheme();
 }
 async function loadMD(force) {
@@ -207,15 +214,19 @@ function render() { renderSidebar(); renderTopbar(); renderMain(); if (openTaskI
 function renderSidebar() {
   const exp = expandedSet();
   const name = S.settings.user_name || 'Yo';
+  const createAffordance = IS_GUEST
+    ? `<div class="guest-banner">👁 Invitado · solo lectura</div>`
+    : IS_EDITOR
+      ? `<div class="guest-banner editor-banner">✎ Editor · puedes trabajar las tareas</div>
+         <button class="create-btn" onclick="newTaskModal()">${I.plus} Crear tarea</button>`
+      : `<button class="create-btn" onclick="createMenu(event)">${I.plus} Crear <span class="caret">${I.chevron}</span></button>`;
   let html = `
     <div class="logo"><span class="dot"></span> Carmín</div>
-    ${IS_GUEST
-      ? `<div class="guest-banner">👁 Invitado · solo lectura</div>`
-      : `<button class="create-btn" onclick="createMenu(event)">${I.plus} Crear <span class="caret">${I.chevron}</span></button>`}
+    ${createAffordance}
     <button class="nav-item ${route.type === 'inicio' ? 'active' : ''}" onclick="nav('inicio')">${I.home} Inicio</button>
     <button class="nav-item ${route.type === 'all' ? 'active' : ''}" onclick="nav('all')">${I.all} Todas las tareas</button>
     <button class="nav-item ${route.type === 'md' ? 'active' : ''}" onclick="nav('md')">${I.folder} Proyectos</button>
-    <div class="nav-section">Espacios ${IS_GUEST ? '' : `<button onclick="addSpacePrompt()" title="Nuevo espacio">${I.plus}</button>`}</div>`;
+    <div class="nav-section">Espacios ${isOwner() ? `<button onclick="addSpacePrompt()" title="Nuevo espacio">${I.plus}</button>` : ''}</div>`;
   for (const sp of S.spaces) {
     const open = exp.has(sp.id);
     html += `
@@ -224,7 +235,7 @@ function renderSidebar() {
           <span style="display:inline-flex;transition:transform .15s;transform:rotate(${open ? 90 : 0}deg)">${I.chevron}</span>
           <span class="space-icon">${esc(sp.icon || '📁')}</span> ${esc(sp.name)}
         </button>
-        <button class="icon-btn" style="width:30px;height:30px" onclick="spaceMenu(event,${sp.id})">${I.dots}</button>
+        ${isOwner() ? `<button class="icon-btn" style="width:30px;height:30px" onclick="spaceMenu(event,${sp.id})">${I.dots}</button>` : ''}
       </div>`;
     if (open) {
       for (const l of sp.lists) {
@@ -233,14 +244,14 @@ function renderSidebar() {
         html += `<button class="nav-item list-item ${route.type === 'list' && route.listId === l.id ? 'active' : ''}" onclick="nav('list',${l.id})">
           ${l.icon ? esc(l.icon) + ' ' : ''}${esc(l.name)}${connected ? ' <span class="list-connected-badge">⚡</span>' : ''} <span class="spacer"></span><span class="faint" style="font-size:11.5px">${n}</span></button>`;
       }
-      html += `<button class="nav-item list-item faint" style="font-size:12.5px" onclick="addListPrompt(${sp.id})">${I.plus} Nueva lista</button>`;
+      if (isOwner()) html += `<button class="nav-item list-item faint" style="font-size:12.5px" onclick="addListPrompt(${sp.id})">${I.plus} Nueva lista</button>`;
     }
   }
   html += `
     <div class="sidebar-foot">
       <div class="who"><span class="avatar">${esc(name[0] || 'Y').toUpperCase()}</span> ${esc(name)}</div>
       <button class="icon-btn" onclick="quickTheme()" title="Cambiar tema">${(S.settings.theme || 'dark') === 'dark' ? I.sun : I.moon}</button>
-      <button class="icon-btn" onclick="openSettings()" title="Ajustes">${I.gear}</button>
+      ${isOwner() ? `<button class="icon-btn" onclick="openSettings()" title="Ajustes">${I.gear}</button>` : ''}
     </div>`;
   $('#sidebar').innerHTML = html;
 }
@@ -270,7 +281,7 @@ function renderTopbar() {
   const tabNames = { lista: 'Lista', tablero: 'Tablero', calendario: 'Calendario', tabla: 'Tabla', panel: 'Panel', grafo: 'Grafo', documento: 'Documento' };
 
   const noun = route.type === 'list' ? itemNoun(listById(route.listId)) : 'tarea';
-  const showConfig = route.type === 'list' && !isConnected && !IS_GUEST;
+  const showConfig = route.type === 'list' && !isConnected && isOwner();
   let html = `<div class="topbar-row">
     <button class="icon-btn topbar-toggle" onclick="toggleSidebar()" title="Mostrar/ocultar panel lateral">${I.sidebar}</button>
     <div class="crumb">${crumb}</div>
@@ -1476,7 +1487,7 @@ function renderAttachmentsSection(t) {
     body += `<div class="att-grid">${imgs.map(a => `
       <div class="att-img" title="${esc(a.name)}">
         <img src="${attUrl(a.id)}" alt="${esc(a.name)}" loading="lazy" onclick="openLightbox(${a.id})">
-        ${IS_GUEST ? '' : `<button class="att-del" title="Quitar" onclick="event.stopPropagation();deleteAttachment(${a.id})">${I.x}</button>`}
+        ${isOwner() ? `<button class="att-del" title="Quitar" onclick="event.stopPropagation();deleteAttachment(${a.id})">${I.x}</button>` : ''}
       </div>`).join('')}</div>`;
   }
   if (files.length) {
@@ -1489,18 +1500,21 @@ function renderAttachmentsSection(t) {
         <span class="att-meta faint">${local ? 'en tu PC' : humanSize(a.size)}</span>
         <span class="att-acts">
           ${local
-            ? `<button class="att-open" title="Abrir en tu Mac" onclick="openLocalAtt(${a.id},false)">Abrir</button>
-               <button class="att-open" title="Mostrar en Finder" onclick="openLocalAtt(${a.id},true)">📂</button>`
+            ? (isOwner()
+                ? `<button class="att-open" title="Abrir en tu Mac" onclick="openLocalAtt(${a.id},false)">Abrir</button>
+                   <button class="att-open" title="Mostrar en Finder" onclick="openLocalAtt(${a.id},true)">📂</button>`
+                : '')
             : `<a class="att-open" href="${attUrl(a.id, true)}" title="Descargar">↓</a>`}
-          ${IS_GUEST ? '' : `<button class="icon-btn btn-danger" style="width:26px;height:26px" onclick="deleteAttachment(${a.id})">${I.x}</button>`}
+          ${isOwner() ? `<button class="icon-btn btn-danger" style="width:26px;height:26px" onclick="deleteAttachment(${a.id})">${I.x}</button>` : ''}
         </span>
       </div>`;
     }).join('')}</div>`;
   }
   if (!atts.length) body = `<div class="att-empty faint">Pega una imagen (⌘V), arrastra archivos aquí, o usa los botones.</div>`;
-  const tools = IS_GUEST ? '' : `<div class="att-tools">
+  // Editor puede subir; solo el dueño puede vincular archivos de su disco.
+  const tools = !canEdit() ? '' : `<div class="att-tools">
       <button class="btn btn-soft" onclick="triggerUpload(${t.id})">${I.plus} Subir archivo</button>
-      <button class="btn btn-soft" onclick="openFileBrowser(${t.id})">${I.folder} Elegir de mi PC</button>
+      ${isOwner() ? `<button class="btn btn-soft" onclick="openFileBrowser(${t.id})">${I.folder} Elegir de mi PC</button>` : ''}
     </div>`;
   return `<div class="tp-attach" data-task="${t.id}">
     <div class="tp-section" style="margin-bottom:8px">Adjuntos (${atts.length})</div>

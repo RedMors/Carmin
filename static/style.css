@@ -1202,6 +1202,16 @@ body.guest-mode .tp-rel .btn-soft { display: none !important; }
 .doc-render .md-empty { font-size: 14px; line-height: 1.7; }
 body.guest-mode .doc-toggle { display: none !important; }
 
+/* --- modo editor (colaborador): edita tareas, pero no la estructura --- */
+.editor-banner {
+  background: color-mix(in srgb, #34C77B 14%, transparent);
+  color: #34C77B; border-color: color-mix(in srgb, #34C77B 28%, transparent);
+  margin-bottom: var(--space-2);
+}
+body.editor-mode .tp-head .btn-danger,   /* no borrar tareas */
+body.editor-mode .cf-edit-link,          /* no configurar columnas/tipo */
+body.editor-mode .tab-add { display: none !important; }  /* no agregar vistas */
+
 /* --- diálogos propios (uiConfirm / uiPrompt) — reemplazan prompt/confirm del navegador --- */
 .ui-dialog-layer { position: fixed; inset: 0; z-index: 110; }
 .ui-dialog-layer .scrim { position: absolute; inset: 0; background: var(--scrim); opacity: 0; transition: opacity var(--dur) var(--ease); }
