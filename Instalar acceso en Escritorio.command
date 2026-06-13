@@ -1,7 +1,6 @@
 #!/bin/sh
-# Doble clic: crea un acceso directo a Carmín en tu Escritorio.
-# No instala nada ni mueve tus datos — solo deja un "Carmín.command" que,
-# al hacerle doble clic, arranca la app desde esta carpeta.
+# Doble clic: deja "Carmín.app" en tu Escritorio, con ícono propio.
+# No instala nada ni mueve tus datos — la app solo abre Carmín desde esta carpeta.
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 
@@ -10,30 +9,63 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 DESK="$HOME/Desktop"
 mkdir -p "$DESK"
 
-LAUNCHER="$DESK/Carmín.command"
+APP="$DESK/Carmín.app"
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-cat > "$LAUNCHER" <<EOF
-#!/bin/sh
-# Abre Carmín. Deja esta ventana abierta mientras lo usas (Ctrl+C para apagar).
-# Generado por "Instalar acceso en Escritorio" — apunta a la carpeta de Carmín.
-cd "$REPO" || { echo "No encuentro la carpeta de Carmín ($REPO)."; read _ 2>/dev/null; exit 1; }
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "No encuentro python3. Instálalo desde https://www.python.org/downloads/ y reintenta."
-  read _ 2>/dev/null
-  exit 1
-fi
-echo "● Abriendo Carmín…  (deja esta ventana abierta; Ctrl+C para apagar)"
-exec python3 app.py
+# --- metadatos del bundle ---
+cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>Carmín</string>
+  <key>CFBundleDisplayName</key><string>Carmín</string>
+  <key>CFBundleIdentifier</key><string>local.carmin.launcher</string>
+  <key>CFBundleVersion</key><string>1.0</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>carmin</string>
+  <key>CFBundleIconFile</key><string>carmin</string>
+  <key>LSMinimumSystemVersion</key><string>10.12</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
 EOF
 
-chmod +x "$LAUNCHER"
-# Quita la marca de cuarentena para que macOS no lo bloquee al abrirlo.
-xattr -d com.apple.quarantine "$LAUNCHER" 2>/dev/null || true
+# --- ejecutable: abre Carmín en una ventana de Terminal (para apagar con Ctrl+C) ---
+cat > "$APP/Contents/MacOS/carmin" <<EOF
+#!/bin/sh
+open -a Terminal "$REPO/Abrir Carmín.command"
+EOF
+chmod +x "$APP/Contents/MacOS/carmin"
+
+# --- ícono: convierte el PNG maestro a .icns con las herramientas de macOS ---
+SRC="$REPO/assets/icon-1024.png"
+if [ -f "$SRC" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+  ISET="$(mktemp -d)/carmin.iconset"
+  mkdir -p "$ISET"
+  for s in 16 32 128 256 512; do
+    sips -z "$s" "$s"     "$SRC" --out "$ISET/icon_${s}x${s}.png"     >/dev/null 2>&1
+    d=$((s * 2))
+    sips -z "$d" "$d"     "$SRC" --out "$ISET/icon_${s}x${s}@2x.png"  >/dev/null 2>&1
+  done
+  iconutil -c icns "$ISET" -o "$APP/Contents/Resources/carmin.icns" >/dev/null 2>&1
+  rm -rf "$(dirname "$ISET")"
+fi
+
+# Quita la cuarentena de Gatekeeper y refresca el ícono en Finder.
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+touch "$APP"
 
 echo ""
-echo "  ✓ Listo: tienes 'Carmín.command' en tu Escritorio."
-echo "    Doble clic ahí cada vez que quieras abrir Carmín."
+if [ -f "$APP/Contents/Resources/carmin.icns" ]; then
+  echo "  ✓ Listo: 'Carmín' está en tu Escritorio, con su ícono."
+else
+  echo "  ✓ Listo: 'Carmín' está en tu Escritorio (sin ícono: no encontré sips/iconutil)."
+fi
+echo "    Doble clic para abrir Carmín cuando quieras."
 echo ""
-echo "    Si la primera vez macOS pregunta, elige Terminal / Abrir."
+echo "    La primera vez, si macOS pregunta: clic derecho → Abrir → Abrir."
 echo "    (Ya puedes cerrar esta ventana.)"
 echo ""
