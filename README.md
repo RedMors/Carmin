@@ -25,9 +25,15 @@ Se abre solo en tu navegador en `http://127.0.0.1:4848`. Para apagarlo: `Ctrl+C`
 ## Qué incluye
 
 - ✅ **Espacios → Listas → Tareas**, como ClickUp
-- ✅ Vistas **Lista, Tablero (Kanban con drag & drop) y Calendario** — activa solo las que uses
+- ✅ Vistas **Lista, Tablero (Kanban con drag & drop), Calendario, Tabla, Panel, Grafo y Documento** — activa solo las que uses
+- ✅ **Listas como tipos**: una lista no solo guarda tareas, también contactos, viajes o gastos. Dale un icono, un nombre de ítem y columnas propias (tu mini-base de datos personal)
+- ✅ **Relaciones entre tareas**: vincula qué *bloquea* a qué, qué está *relacionado* o es *duplicado*, y míralo todo en la **vista de grafo**
+- ✅ **Adjuntos**: pega (⌘V) o arrastra imágenes y archivos a una tarea; o **elige un archivo de tu PC** y ábrelo en su app nativa sin copiarlo
+- ✅ **Documento** por lista: una página Markdown tipo Notion con imágenes pegadas/arrastradas
 - ✅ **Inicio**: tu día de un vistazo (vencidas, para hoy, urgentes)
 - ✅ **Proyectos**: vigila carpetas con archivos `.md` — qué cambió, qué checkbox sigue pendiente, y el estado git (cambios sin commit / commits sin subir)
+- ✅ **Metas**: objetivos medibles por proyecto con progreso (vista Panel)
+- ✅ **Conectores en vivo**: trae datos de Supabase, una API o GitHub a una lista (solo lectura)
 - ✅ Convierte un `- [ ]` de tus notas en tarea con un clic
 - ✅ Estados personalizables (nombre, color, orden)
 - ✅ Prioridades, fechas límite, etiquetas y comentarios
@@ -95,7 +101,11 @@ conexión cifrada de Tailscale mientras tú tengas Carmín abierto.
 
 ## Hoja de ruta
 
-- [ ] Modo invitado: compartir en red local (solo lectura + comentarios)
+- [x] Modo invitado: compartir en red local (solo lectura + comentarios)
+- [x] Relaciones entre tareas + vista de grafo
+- [x] Listas como tipos (campos custom como esquema)
+- [x] Adjuntos: imágenes pegadas/arrastradas y archivos locales
+- [x] Vista Documento (Markdown por lista)
 - [ ] Exportar / importar datos
 - [ ] Subtareas
 - [ ] English UI

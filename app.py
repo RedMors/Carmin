@@ -22,6 +22,8 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(BASE, "static")
 DB_PATH = os.path.join(BASE, "data.db")
 CREDS_PATH = os.path.join(BASE, "credentials.json")
+ATTACH_DIR = os.path.join(BASE, "attachments")  # archivos subidos (pegados/arrastrados)
+MAX_UPLOAD = 25 * 1024 * 1024                    # 25 MB por archivo subido
 HOST = "127.0.0.1"          # binding por defecto: solo esta Mac
 DEFAULT_PORT = 4848
 
@@ -73,6 +75,8 @@ CREATE TABLE IF NOT EXISTS lists(
   space_id      INTEGER NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
   name          TEXT NOT NULL,
   pos           INTEGER NOT NULL DEFAULT 0,
+  icon          TEXT NOT NULL DEFAULT '',    -- emoji opcional de la lista
+  item_noun     TEXT NOT NULL DEFAULT '',    -- nombre del ítem en singular: "Contacto", "Viaje"… ('' = tarea)
   custom_fields TEXT NOT NULL DEFAULT '[]', -- JSON: [{id,name,type,options?,width?}]
   source_id     INTEGER REFERENCES sources(id) ON DELETE SET NULL,
   source_path   TEXT NOT NULL DEFAULT '',   -- ej: "trip_posts?visibility=eq.public&limit=50"
@@ -106,6 +110,31 @@ CREATE TABLE IF NOT EXISTS comments(
   text       TEXT NOT NULL,
   created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS attachments(
+  id         INTEGER PRIMARY KEY,
+  task_id    INTEGER REFERENCES tasks(id) ON DELETE CASCADE,  -- adjunto de una tarea
+  list_id    INTEGER REFERENCES lists(id) ON DELETE CASCADE,  -- o imagen de un documento de lista
+  kind       TEXT NOT NULL DEFAULT 'upload',  -- upload (copiado a attachments/) | local (referencia a un path del disco)
+  name       TEXT NOT NULL,                   -- nombre visible
+  stored     TEXT NOT NULL DEFAULT '',        -- upload: nombre de archivo dentro de attachments/
+  abs_path   TEXT NOT NULL DEFAULT '',        -- local: ruta absoluta en el disco del usuario
+  mime       TEXT NOT NULL DEFAULT '',
+  size       INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS docs(
+  list_id    INTEGER PRIMARY KEY REFERENCES lists(id) ON DELETE CASCADE,
+  content    TEXT NOT NULL DEFAULT '',        -- markdown del documento de la lista
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS task_links(
+  id         INTEGER PRIMARY KEY,
+  src_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  dst_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL DEFAULT 'relates', -- relates | blocks | duplicates
+  created_at TEXT,
+  UNIQUE(src_id, dst_id, kind)
+);
 CREATE TABLE IF NOT EXISTS folders(
   id   INTEGER PRIMARY KEY,
   name TEXT,
@@ -136,10 +165,13 @@ SOFT_MIGRATIONS = [
     "ALTER TABLE lists ADD COLUMN source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL",
     "ALTER TABLE lists ADD COLUMN source_path TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE lists ADD COLUMN source_mapping TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE lists ADD COLUMN icon TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE lists ADD COLUMN item_noun TEXT NOT NULL DEFAULT ''",
 ]
 
 
 def init_db():
+    os.makedirs(ATTACH_DIR, exist_ok=True)
     con = db()
     with con:
         con.executescript(SCHEMA)
@@ -249,10 +281,19 @@ def get_state():
         comments = [dict(r) for r in con.execute("SELECT * FROM comments ORDER BY id")]
         folders = [dict(r) for r in con.execute("SELECT * FROM folders ORDER BY id")]
         goals = [dict(r) for r in con.execute("SELECT * FROM goals ORDER BY pos,id")]
+        attachments = []
+        for r in con.execute("SELECT * FROM attachments ORDER BY id"):
+            d = dict(r)
+            d.pop("abs_path", None)  # no exponemos rutas del disco al cliente; se abren por id
+            d["has_path"] = bool(r["abs_path"])
+            attachments.append(d)
+        links = [dict(r) for r in con.execute("SELECT * FROM task_links ORDER BY id")]
+        docs = {str(r["list_id"]): r["content"] for r in con.execute("SELECT list_id,content FROM docs")}
         return {
             "settings": settings, "statuses": statuses, "spaces": spaces,
             "tasks": tasks, "comments": comments, "folders": folders,
             "sources": sources_list, "goals": goals,
+            "attachments": attachments, "links": links, "docs": docs,
         }
     finally:
         con.close()
@@ -607,6 +648,14 @@ def api_post(path, b):
                 return _goal(con, action, b)
             if path == "/api/creds":
                 return _creds(action, b)
+            if path == "/api/attachment":
+                return _attachment(con, action, b)
+            if path == "/api/link":
+                return _link(con, action, b)
+            if path == "/api/doc":
+                return _doc(con, action, b)
+            if path == "/api/open":
+                return _open_local(con, b)
             raise ApiError("Ruta desconocida: %s" % path)
     finally:
         con.close()
@@ -753,8 +802,17 @@ def _list(con, action, b):
                     (b.get("space_id"), name[:60], pos))
         return {"ok": True, "id": con.execute("SELECT last_insert_rowid() i").fetchone()["i"]}
     if action == "update":
-        con.execute("UPDATE lists SET name=? WHERE id=?",
-                    (str(b.get("name", "")).strip()[:60], b.get("id")))
+        sets, vals = [], []
+        if "name" in b:
+            sets.append("name=?"); vals.append(str(b["name"]).strip()[:60])
+        if "icon" in b:
+            sets.append("icon=?"); vals.append(str(b["icon"])[:8])
+        if "item_noun" in b:
+            sets.append("item_noun=?"); vals.append(str(b["item_noun"]).strip()[:30])
+        if not sets:
+            return {"ok": True}
+        vals.append(b.get("id"))
+        con.execute("UPDATE lists SET " + ",".join(sets) + " WHERE id=?", vals)
         return {"ok": True}
     if action == "set_fields":
         list_id = b.get("id")
@@ -1030,6 +1088,215 @@ def _creds(action, b):
     raise ApiError("Acción desconocida")
 
 
+# ---------------------------------------------------------------- adjuntos (imágenes / archivos)
+
+import base64
+import mimetypes
+
+_SAFE_NAME = re.compile(r"[^a-zA-Z0-9._-]+")
+
+
+def _safe_filename(name):
+    name = os.path.basename(str(name or "").strip()) or "archivo"
+    name = _SAFE_NAME.sub("_", name).strip("._") or "archivo"
+    return name[:120]
+
+
+def _attachment(con, action, b):
+    if action == "upload":
+        # Sube un archivo pegado/arrastrado: viene como base64 en 'data'.
+        # Va asociado a una tarea (task_id) o a un documento de lista (list_id).
+        task_id = b.get("task_id")
+        list_id = b.get("list_id")
+        if task_id:
+            if not con.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone():
+                raise ApiError("Esa tarea no existe")
+        elif list_id:
+            if not con.execute("SELECT 1 FROM lists WHERE id=?", (list_id,)).fetchone():
+                raise ApiError("Esa lista no existe")
+        else:
+            raise ApiError("Falta task_id o list_id")
+        raw_b64 = str(b.get("data", "") or "")
+        if "," in raw_b64 and raw_b64[:5] == "data:":
+            raw_b64 = raw_b64.split(",", 1)[1]  # quita "data:image/png;base64,"
+        try:
+            blob = base64.b64decode(raw_b64, validate=False)
+        except Exception:
+            raise ApiError("Archivo inválido")
+        if not blob:
+            raise ApiError("El archivo está vacío")
+        if len(blob) > MAX_UPLOAD:
+            raise ApiError("El archivo supera el límite de 25 MB")
+        name = _safe_filename(b.get("name") or "archivo")
+        mime = str(b.get("mime", "") or "") or (mimetypes.guess_type(name)[0] or "application/octet-stream")
+        os.makedirs(ATTACH_DIR, exist_ok=True)
+        # nombre físico único: <rowid temporal por tiempo>_<name>
+        import secrets as _s
+        stored = _s.token_hex(6) + "_" + name
+        with open(os.path.join(ATTACH_DIR, stored), "wb") as f:
+            f.write(blob)
+        con.execute(
+            "INSERT INTO attachments(task_id,list_id,kind,name,stored,mime,size,created_at)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (task_id, list_id, "upload", name, stored, mime, len(blob), now()))
+        return {"ok": True, "id": con.execute("SELECT last_insert_rowid() i").fetchone()["i"]}
+
+    if action == "link_local":
+        # Referencia a un archivo que ya vive en el disco del usuario (no se copia).
+        if SHARE_MODE:
+            raise ApiError("No disponible en modo compartir")
+        task_id = b.get("task_id")
+        if not con.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone():
+            raise ApiError("Esa tarea no existe")
+        path = os.path.abspath(os.path.expanduser(str(b.get("path", "")).strip()))
+        if not os.path.exists(path):
+            raise ApiError("No encuentro ese archivo: %s" % path)
+        name = os.path.basename(path) or path
+        is_dir = os.path.isdir(path)
+        mime = "inode/directory" if is_dir else (mimetypes.guess_type(name)[0] or "application/octet-stream")
+        try:
+            size = 0 if is_dir else os.path.getsize(path)
+        except OSError:
+            size = 0
+        con.execute(
+            "INSERT INTO attachments(task_id,kind,name,abs_path,mime,size,created_at)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (task_id, "local", name, path, mime, size, now()))
+        return {"ok": True, "id": con.execute("SELECT last_insert_rowid() i").fetchone()["i"]}
+
+    if action == "delete":
+        row = con.execute("SELECT * FROM attachments WHERE id=?", (b.get("id"),)).fetchone()
+        if row and row["kind"] == "upload" and row["stored"]:
+            try:
+                os.remove(os.path.join(ATTACH_DIR, row["stored"]))
+            except OSError:
+                pass
+        con.execute("DELETE FROM attachments WHERE id=?", (b.get("id"),))
+        return {"ok": True}
+    raise ApiError("Acción desconocida")
+
+
+def _open_local(con, b):
+    """Abre un archivo/carpeta del disco en su app nativa o lo revela en el explorador.
+    La ruta se resuelve por el id del adjunto en el servidor — el cliente nunca la maneja.
+    Solo local (nunca en modo compartir: expondría el filesystem del host)."""
+    if SHARE_MODE:
+        raise ApiError("No disponible en modo compartir")
+    path_id = b.get("path_id")
+    if path_id:
+        row = con.execute("SELECT abs_path FROM attachments WHERE id=? AND kind='local'", (path_id,)).fetchone()
+        if not row or not row["abs_path"]:
+            raise ApiError("Ese adjunto local ya no existe")
+        path = row["abs_path"]
+    else:
+        path = os.path.abspath(os.path.expanduser(str(b.get("path", "")).strip()))
+    reveal = bool(b.get("reveal"))
+    if not os.path.exists(path):
+        raise ApiError("Ya no encuentro eso en el disco")
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open"] + (["-R"] if reveal else []) + [path], timeout=5)
+        elif sys.platform.startswith("win"):
+            if reveal:
+                subprocess.run(["explorer", "/select,", path], timeout=5)
+            else:
+                os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            subprocess.run(["xdg-open", os.path.dirname(path) if reveal else path], timeout=5)
+    except Exception as e:
+        raise ApiError("No pude abrirlo: %s" % e)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- enlaces entre tareas
+
+VALID_LINK_KINDS = {"relates", "blocks", "duplicates"}
+
+
+def _doc(con, action, b):
+    """Documento markdown por lista (vista Documento)."""
+    if action == "save":
+        list_id = b.get("list_id")
+        if not con.execute("SELECT 1 FROM lists WHERE id=?", (list_id,)).fetchone():
+            raise ApiError("Esa lista no existe")
+        content = str(b.get("content", ""))[:200000]
+        con.execute(
+            "INSERT INTO docs(list_id,content,updated_at) VALUES(?,?,?)"
+            " ON CONFLICT(list_id) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at",
+            (list_id, content, now()))
+        return {"ok": True}
+    raise ApiError("Acción desconocida")
+
+
+def _link(con, action, b):
+    if action == "create":
+        src, dst = b.get("src_id"), b.get("dst_id")
+        kind = str(b.get("kind", "relates")).lower()
+        if kind not in VALID_LINK_KINDS:
+            raise ApiError("Tipo de relación inválido")
+        if src == dst:
+            raise ApiError("Una tarea no puede vincularse consigo misma")
+        for tid in (src, dst):
+            if not con.execute("SELECT 1 FROM tasks WHERE id=?", (tid,)).fetchone():
+                raise ApiError("Esa tarea no existe")
+        try:
+            con.execute(
+                "INSERT INTO task_links(src_id,dst_id,kind,created_at) VALUES(?,?,?,?)",
+                (src, dst, kind, now()))
+        except sqlite3.IntegrityError:
+            return {"ok": True}  # ya existía ese enlace
+        return {"ok": True, "id": con.execute("SELECT last_insert_rowid() i").fetchone()["i"]}
+    if action == "delete":
+        con.execute("DELETE FROM task_links WHERE id=?", (b.get("id"),))
+        return {"ok": True}
+    raise ApiError("Acción desconocida")
+
+
+# ---------------------------------------------------------------- explorador de archivos local
+
+HOME = os.path.expanduser("~")
+
+
+def browse_dir(path):
+    """Lista una carpeta del disco del usuario para el selector de archivos.
+    Solo local. Devuelve carpetas primero, luego archivos, alfabético."""
+    if SHARE_MODE:
+        raise ApiError("No disponible en modo compartir")
+    path = os.path.abspath(os.path.expanduser(path or HOME))
+    if not os.path.isdir(path):
+        path = HOME
+    entries = []
+    try:
+        for name in os.listdir(path):
+            if name.startswith("."):
+                continue  # ocultos fuera
+            fp = os.path.join(path, name)
+            try:
+                is_dir = os.path.isdir(fp)
+                st = os.stat(fp)
+            except OSError:
+                continue
+            entries.append({
+                "name": name, "path": fp, "is_dir": is_dir,
+                "size": 0 if is_dir else st.st_size, "mtime": int(st.st_mtime),
+                "ext": "" if is_dir else os.path.splitext(name)[1].lower().lstrip("."),
+            })
+    except OSError as e:
+        raise ApiError("No pude leer esa carpeta: %s" % e)
+    entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+    parent = os.path.dirname(path) if path != os.path.dirname(path) else None
+    shortcuts = [("Inicio", HOME)]
+    for label, sub in [("Escritorio", "Desktop"), ("Documentos", "Documents"),
+                       ("Descargas", "Downloads"), ("Imágenes", "Pictures")]:
+        d = os.path.join(HOME, sub)
+        if os.path.isdir(d):
+            shortcuts.append((label, d))
+    return {
+        "path": path, "parent": parent, "entries": entries[:500],
+        "shortcuts": [{"label": l, "path": p} for l, p in shortcuts],
+    }
+
+
 # ---------------------------------------------------------------- servidor HTTP
 
 MIME = {
@@ -1040,6 +1307,10 @@ MIME = {
     ".png": "image/png",
     ".woff2": "font/woff2",
 }
+
+# Tipos que el navegador puede mostrar inline (imágenes, pdf). El resto se descarga.
+INLINE_MIME_PREFIXES = ("image/", "text/")
+INLINE_MIME_EXACT = {"application/pdf"}
 
 
 # Acciones de escritura que un invitado SÍ puede hacer (solo comentar/sugerir).
@@ -1078,6 +1349,42 @@ class Handler(BaseHTTPRequestHandler):
         with open(fp, "rb") as f:
             self._send(200, f.read(), MIME.get(ext, "application/octet-stream"))
 
+    def _serve_attachment(self, att_id, download=False):
+        """Sirve un adjunto por id. 'upload' lee de attachments/; 'local' lee del disco
+        (bloqueado en modo compartir para no exponer el filesystem por la red)."""
+        con = db()
+        try:
+            row = con.execute("SELECT * FROM attachments WHERE id=?", (att_id,)).fetchone()
+        finally:
+            con.close()
+        if not row:
+            return self._send(404, {"error": "adjunto no encontrado"})
+        if row["kind"] == "local":
+            if SHARE_MODE:
+                return self._send(403, {"error": "archivos locales no se sirven en modo compartir"})
+            fp = row["abs_path"]
+        else:
+            fp = os.path.normpath(os.path.join(ATTACH_DIR, row["stored"]))
+            if not fp.startswith(ATTACH_DIR):
+                return self._send(404, {"error": "no encontrado"})
+        if not os.path.isfile(fp):
+            return self._send(404, {"error": "el archivo ya no está en el disco"})
+        mime = row["mime"] or MIME.get(os.path.splitext(fp)[1].lower(), "application/octet-stream")
+        try:
+            with open(fp, "rb") as f:
+                data = f.read()
+        except OSError:
+            return self._send(404, {"error": "no pude leer el archivo"})
+        inline = (not download) and (mime in INLINE_MIME_EXACT or mime.startswith(INLINE_MIME_PREFIXES))
+        disp = "inline" if inline else "attachment"
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", '%s; filename="%s"' % (disp, _safe_filename(row["name"])))
+        self.send_header("Cache-Control", "private, max-age=3600")
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self):
         p = urlparse(self.path).path
         try:
@@ -1108,6 +1415,22 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/creds":
                 # Listar refs (sin valores) — útil para la UI
                 return self._send(200, _creds("list", {}))
+            if p == "/api/attachment":
+                from urllib.parse import parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                aid = (qs.get("id") or [""])[0]
+                if not aid.isdigit():
+                    return self._send(400, {"error": "id requerido"})
+                return self._serve_attachment(int(aid), download=(qs.get("dl") or [""])[0] == "1")
+            if p == "/api/browse":
+                if SHARE_MODE:
+                    return self._send(403, {"error": "explorador no disponible en modo compartir"})
+                from urllib.parse import parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                try:
+                    return self._send(200, browse_dir((qs.get("path") or [""])[0]))
+                except ApiError as e:
+                    return self._send(400, {"error": str(e)})
             self._send(404, {"error": "no encontrado"})
         except BrokenPipeError:
             pass
@@ -1118,6 +1441,8 @@ class Handler(BaseHTTPRequestHandler):
         p = urlparse(self.path).path
         try:
             n = int(self.headers.get("Content-Length") or 0)
+            if n > MAX_UPLOAD + 8 * 1024 * 1024:  # margen por overhead base64/JSON
+                return self._send(413, {"error": "Archivo demasiado grande (máx. 25 MB)"})
             body = json.loads(self.rfile.read(n) or b"{}")
         except ValueError:
             return self._send(400, {"error": "JSON inválido"})

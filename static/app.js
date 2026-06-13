@@ -24,6 +24,8 @@ const I = {
   refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6"/></svg>',
   chart: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6"/><rect x="13" y="7" width="3" height="10"/></svg>',
   edit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
+  graph: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.6 7.8 10.4 16M16.4 7.8 13.6 16M8 6h8"/></svg>',
+  sidebar: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>',
 };
 
 /* ---------------------------------------------------------- estado global */
@@ -122,8 +124,13 @@ const statuses = () => S.statuses;
 const statusById = (id) => S.statuses.find(s => s.id === id) || S.statuses[0];
 const listById = (id) => { for (const sp of S.spaces) { const l = sp.lists.find(x => x.id === id); if (l) return l; } return null; };
 const spaceOfList = (id) => S.spaces.find(sp => sp.lists.some(l => l.id === id));
+const itemNoun = (l) => (l && l.item_noun && l.item_noun.trim()) ? l.item_noun.trim() : 'tarea';
+const routeNoun = () => route.type === 'list' ? itemNoun(listById(route.listId)) : 'tarea';
+const cap = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
 const taskById = (id) => S.tasks.find(t => t.id === id);
 const commentsOf = (id) => S.comments.filter(c => c.task_id === id);
+const attachmentsOf = (id) => (S.attachments || []).filter(a => a.task_id === id);
+const linksOf = (id) => (S.links || []).filter(l => l.src_id === id || l.dst_id === id);
 const isDone = (t) => statusById(t.status_id).kind === 'done';
 const enabledViews = () => { try { const v = JSON.parse(S.settings.views || '[]'); return v.length ? v : ['lista']; } catch (e) { return ['lista', 'tablero', 'calendario']; } };
 
@@ -224,7 +231,7 @@ function renderSidebar() {
         const connected = !!l.source_id;
         const n = connected ? '' : (S.tasks.filter(t => t.list_id === l.id && !isDone(t)).length || '');
         html += `<button class="nav-item list-item ${route.type === 'list' && route.listId === l.id ? 'active' : ''}" onclick="nav('list',${l.id})">
-          ${esc(l.name)}${connected ? ' <span class="list-connected-badge">⚡</span>' : ''} <span class="spacer"></span><span class="faint" style="font-size:11.5px">${n}</span></button>`;
+          ${l.icon ? esc(l.icon) + ' ' : ''}${esc(l.name)}${connected ? ' <span class="list-connected-badge">⚡</span>' : ''} <span class="spacer"></span><span class="faint" style="font-size:11.5px">${n}</span></button>`;
       }
       html += `<button class="nav-item list-item faint" style="font-size:12.5px" onclick="addListPrompt(${sp.id})">${I.plus} Nueva lista</button>`;
     }
@@ -249,23 +256,28 @@ function renderTopbar() {
   }
   else if (route.type === 'list') {
     const l = listById(route.listId), sp = l && spaceOfList(l.id);
+    const ln = l ? `${l.icon ? esc(l.icon) + ' ' : ''}${esc(l.name)}` : 'Lista';
     crumb = l && sp
-      ? `${esc(sp.icon || '📁')} ${esc(sp.name)} <span class="sep">/</span> ${esc(l.name)}`
-      : (l ? esc(l.name) : 'Lista');
+      ? `${esc(sp.icon || '📁')} ${esc(sp.name)} <span class="sep">/</span> ${ln}`
+      : ln;
   }
   const tabsViews = enabledViews();
   // En listas conectadas a fuentes externas, los tabs Lista/Tablero/Calendario/Tabla
   // no aplican: los datos son read-only y tienen su propia vista. Ocultamos los tabs.
   const isConnected = route.type === 'list' && listById(route.listId)?.source_id;
   const showTabs = (route.type === 'list' || route.type === 'all') && !isConnected;
-  const tabIcons = { lista: I.list, tablero: I.board, calendario: I.cal, tabla: I.all, panel: I.chart };
-  const tabNames = { lista: 'Lista', tablero: 'Tablero', calendario: 'Calendario', tabla: 'Tabla', panel: 'Panel' };
+  const tabIcons = { lista: I.list, tablero: I.board, calendario: I.cal, tabla: I.all, panel: I.chart, grafo: I.graph, documento: I.file };
+  const tabNames = { lista: 'Lista', tablero: 'Tablero', calendario: 'Calendario', tabla: 'Tabla', panel: 'Panel', grafo: 'Grafo', documento: 'Documento' };
 
+  const noun = route.type === 'list' ? itemNoun(listById(route.listId)) : 'tarea';
+  const showConfig = route.type === 'list' && !isConnected && !IS_GUEST;
   let html = `<div class="topbar-row">
+    <button class="icon-btn topbar-toggle" onclick="toggleSidebar()" title="Mostrar/ocultar panel lateral">${I.sidebar}</button>
     <div class="crumb">${crumb}</div>
     <div class="top-spacer"></div>
     ${showTabs ? `<div class="search">${I.search}<input placeholder="Buscar tareas…" value="${esc(q)}" oninput="searchInput(this)"></div>` : ''}
-    <button class="btn btn-primary" onclick="newTaskModal()">${I.plus} Crear tarea</button>
+    ${showConfig ? `<button class="btn btn-soft" onclick="openCustomFieldsEditor(${route.listId})" title="Configurar tipo y columnas de esta lista">${I.gear} Configurar</button>` : ''}
+    <button class="btn btn-primary" onclick="newTaskModal()">${I.plus} Crear ${esc(noun)}</button>
   </div>`;
   if (showTabs) {
     html += `<div class="topbar-row" style="min-height:auto">
@@ -276,7 +288,9 @@ function renderTopbar() {
       </div>
     </div>`;
   }
-  $('#topbar').innerHTML = html;
+  const tb = $('#topbar');
+  tb.className = showTabs ? '' : 'no-tabs';
+  tb.innerHTML = html;
 }
 
 function renderMain() {
@@ -292,6 +306,8 @@ function renderMain() {
   if (route.tab === 'calendario') return viewCalendar();
   if (route.tab === 'tabla') return viewTable();
   if (route.tab === 'panel') return viewPanel();
+  if (route.tab === 'grafo') return viewGraph();
+  if (route.tab === 'documento') return viewDocumento();
   return viewList();
 }
 
@@ -466,7 +482,7 @@ async function saveGoal(id) {
   await refresh();
 }
 async function deleteGoal(id) {
-  if (!confirm('¿Eliminar esta meta?')) return;
+  if (!await uiConfirm({ title: '¿Eliminar esta meta?', message: 'Esto no se puede deshacer.', okText: 'Eliminar', danger: true })) return;
   await api('/api/goal', { action: 'delete', id });
   closeModal();
   toast('Meta eliminada');
@@ -618,7 +634,7 @@ async function saveSourceEdit(listId) {
 }
 
 async function disconnectSource(listId) {
-  if (!confirm('¿Desconectar? La fuente queda guardada pero esta lista vuelve a ser local vacía.')) return;
+  if (!await uiConfirm({ title: '¿Desconectar fuente?', message: 'La fuente queda guardada, pero esta lista vuelve a ser local y vacía.', okText: 'Desconectar', danger: true })) return;
   await api('/api/source', { action: 'connect_list', list_id: listId, source_id: null, path: '', mapping: {} });
   closeModal();
   delete _srcCache[listId];
@@ -783,8 +799,9 @@ function taskTableRow(t, showListCol) {
 function quickAddRow(statusId, showListCol) {
   const listId = route.type === 'list' ? route.listId : (S.spaces[0] && S.spaces[0].lists[0] ? S.spaces[0].lists[0].id : null);
   if (!listId) return '';
+  const noun = route.type === 'list' ? itemNoun(listById(route.listId)) : 'tarea';
   return `<div class="quick-add-row" data-status="${statusId}">${I.plus}
-    <input placeholder="+ Añadir tarea" onkeydown="qaKey(event,${listId},${statusId})"></div>`;
+    <input placeholder="+ Añadir ${esc(noun)}" onkeydown="qaKey(event,${listId},${statusId})"></div>`;
 }
 
 /* ---------------------------------------------------------- vista: tabla (spreadsheet) */
@@ -821,7 +838,7 @@ function viewTable() {
   if (route.type === 'list') {
     html += `<div class="tv-row tv-add">
       <span></span>
-      <input placeholder="+ Añadir tarea" onkeydown="qaKey(event,${route.listId},null)">
+      <input placeholder="+ Añadir ${esc(itemNoun(listById(route.listId)))}" onkeydown="qaKey(event,${route.listId},null)">
     </div>`;
   }
   html += '</div>';
@@ -928,6 +945,314 @@ function calMove(n) {
   if (n === 0) { const d = new Date(); calY = d.getFullYear(); calM = d.getMonth(); }
   else { calM += n; if (calM < 0) { calM = 11; calY--; } if (calM > 11) { calM = 0; calY++; } }
   renderMain();
+}
+
+/* ---------------------------------------------------------- vista: grafo de relaciones */
+const _graph = { pos: {}, key: null, drag: null };
+const GRAPH_W = 1000, GRAPH_H = 680;
+const LINK_COLOR = { relates: '#4E9CF5', blocks: '#E5484D', duplicates: '#A78BFA' };
+
+function graphScopeTaskIds() {
+  // Tareas del ámbito actual (sin filtro de búsqueda).
+  if (route.type === 'list') return new Set(S.tasks.filter(t => t.list_id === route.listId).map(t => t.id));
+  return new Set(S.tasks.map(t => t.id));
+}
+
+function viewGraph() {
+  const scope = graphScopeTaskIds();
+  const edges = [];
+  const ids = new Set();
+  for (const l of (S.links || [])) {
+    if (scope.has(l.src_id) || scope.has(l.dst_id)) {
+      edges.push(l); ids.add(l.src_id); ids.add(l.dst_id);
+    }
+  }
+  const nodes = [...ids].map(id => taskById(id)).filter(Boolean);
+  if (!edges.length) {
+    $('#main').innerHTML = emptyState('🕸️', 'Aún no hay relaciones que mostrar',
+      'Abre una tarea y usa “Vincular tarea” para conectar qué bloquea a qué. El grafo dibuja esas conexiones.');
+    return;
+  }
+  // Layout: recalcular solo si cambió el conjunto de nodos
+  const key = nodes.map(n => n.id).sort((a, b) => a - b).join(',') + '|' + edges.length;
+  if (_graph.key !== key) { graphLayout(nodes, edges); _graph.key = key; }
+  const legend = `<div class="graph-legend">
+    ${Object.entries(LINK_COLOR).map(([k, c]) =>
+      `<div class="lg-row"><span class="lg-line" style="border-top-color:${c}"></span>${esc(LINK_KINDS[k].label)}</div>`).join('')}
+  </div>`;
+  $('#main').innerHTML = `<div class="graph-wrap">${legend}<svg viewBox="0 0 ${GRAPH_W} ${GRAPH_H}" id="graph-svg" preserveAspectRatio="xMidYMid meet"></svg></div>`;
+  renderGraphSVG(nodes, edges);
+  wireGraphDrag(nodes, edges);
+}
+
+function graphLayout(nodes, edges) {
+  // Fuerza dirigida sencilla: repulsión + resortes en enlaces + gravedad al centro.
+  const cx = GRAPH_W / 2, cy = GRAPH_H / 2;
+  const pos = {};
+  nodes.forEach((n, i) => {
+    // semilla determinista en círculo (evita saltos entre renders)
+    const a = (i / nodes.length) * Math.PI * 2;
+    pos[n.id] = { x: cx + Math.cos(a) * 200 + (n.id % 7) * 6, y: cy + Math.sin(a) * 200 + (n.id % 5) * 6, vx: 0, vy: 0 };
+  });
+  const k = Math.min(160, 520 / Math.sqrt(nodes.length + 1));
+  for (let iter = 0; iter < 240; iter++) {
+    // repulsión O(n^2)
+    for (let i = 0; i < nodes.length; i++) {
+      const a = pos[nodes[i].id];
+      for (let j = i + 1; j < nodes.length; j++) {
+        const b = pos[nodes[j].id];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let d2 = dx * dx + dy * dy || 0.01;
+        const f = (k * k) / d2;
+        const d = Math.sqrt(d2);
+        const ux = dx / d, uy = dy / d;
+        a.vx += ux * f; a.vy += uy * f;
+        b.vx -= ux * f; b.vy -= uy * f;
+      }
+    }
+    // resortes en enlaces
+    for (const e of edges) {
+      const a = pos[e.src_id], b = pos[e.dst_id];
+      if (!a || !b) continue;
+      let dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const f = (d - k) * 0.06;
+      const ux = dx / d, uy = dy / d;
+      a.vx += ux * f; a.vy += uy * f;
+      b.vx -= ux * f; b.vy -= uy * f;
+    }
+    // gravedad + integración + damping
+    const damp = 0.85;
+    for (const n of nodes) {
+      const p = pos[n.id];
+      p.vx += (cx - p.x) * 0.008;
+      p.vy += (cy - p.y) * 0.008;
+      p.x += p.vx * 0.5; p.y += p.vy * 0.5;
+      p.vx *= damp; p.vy *= damp;
+      p.x = Math.max(40, Math.min(GRAPH_W - 40, p.x));
+      p.y = Math.max(40, Math.min(GRAPH_H - 40, p.y));
+    }
+  }
+  nodes.forEach(n => { _graph.pos[n.id] = { x: pos[n.id].x, y: pos[n.id].y }; });
+}
+
+function renderGraphSVG(nodes, edges) {
+  const svg = $('#graph-svg');
+  if (!svg) return;
+  const P = _graph.pos;
+  // Grado de cada nodo, precomputado una vez (este render corre en cada pointermove al arrastrar).
+  const deg = {};
+  for (const e of edges) { deg[e.src_id] = (deg[e.src_id] || 0) + 1; deg[e.dst_id] = (deg[e.dst_id] || 0) + 1; }
+  const nodeR = (id) => 14 + Math.min(10, (deg[id] || 0) * 2);
+  // enlaces (con definiciones de flechas por tipo)
+  let edgeHtml = `<defs>${Object.entries(LINK_COLOR).map(([k, c]) =>
+    `<marker id="arrow-${k}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="${c}"/></marker>`).join('')}</defs>`;
+  for (const e of edges) {
+    const a = P[e.src_id], b = P[e.dst_id];
+    if (!a || !b) continue;
+    const c = LINK_COLOR[e.kind] || '#8B97A6';
+    const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+    const rB = nodeR(e.dst_id);
+    const ex = b.x - (dx / d) * (rB + 8), ey = b.y - (dy / d) * (rB + 8);
+    const directed = e.kind !== 'relates';
+    edgeHtml += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}"
+      stroke="${c}" stroke-width="1.8" stroke-opacity="0.6" ${directed ? `marker-end="url(#arrow-${e.kind})"` : ''}></line>`;
+  }
+  // nodos
+  let nodeHtml = '';
+  for (const n of nodes) {
+    const p = P[n.id]; if (!p) continue;
+    const st = statusById(n.status_id);
+    const r = nodeR(n.id);
+    const label = n.title.length > 22 ? n.title.slice(0, 21) + '…' : n.title;
+    nodeHtml += `<g class="graph-node" id="g-node-${n.id}" data-id="${n.id}" transform="translate(${p.x.toFixed(1)},${p.y.toFixed(1)})">
+      <circle r="${r}" fill="${st.color}" fill-opacity="${isDone(n) ? 0.35 : 0.9}" stroke="var(--bg2)" stroke-width="2"></circle>
+      <text y="${r + 15}" text-anchor="middle" font-size="12" fill="var(--text)">${esc(label)}</text>
+    </g>`;
+  }
+  svg.innerHTML = edgeHtml + nodeHtml;
+}
+
+function wireGraphDrag(nodes, edges) {
+  const svg = $('#graph-svg');
+  if (!svg) return;
+  const pt = (ev) => {
+    const r = svg.getBoundingClientRect();
+    return { x: (ev.clientX - r.left) / r.width * GRAPH_W, y: (ev.clientY - r.top) / r.height * GRAPH_H };
+  };
+  let moved = false;
+  svg.addEventListener('pointerdown', (ev) => {
+    const g = ev.target.closest('.graph-node');
+    if (!g) return;
+    _graph.drag = { id: Number(g.dataset.id) };
+    moved = false;
+    try { svg.setPointerCapture(ev.pointerId); } catch (e) {}
+  });
+  svg.addEventListener('pointermove', (ev) => {
+    if (!_graph.drag) return;
+    const m = pt(ev);
+    _graph.pos[_graph.drag.id] = { x: m.x, y: m.y };
+    moved = true;
+    renderGraphSVG(nodes, edges);
+  });
+  svg.addEventListener('pointerup', () => {
+    const d = _graph.drag;
+    _graph.drag = null;
+    if (d && !moved) openTask(d.id);  // click sin arrastrar → abre la tarea
+  });
+}
+
+/* ---------------------------------------------------------- vista: documento (markdown) */
+function mdSafeUrl(u, isImg) {
+  // u ya viene escapado (esc) cuando llega desde mdToHtml.
+  u = String(u).trim();
+  // Imágenes de adjuntos: usa SIEMPRE el token del visor actual (no el persistido).
+  // Evita fugar el token del dueño guardado en el doc y arregla el 401 del invitado.
+  const m = u.match(/^\/api\/attachment\b.*?[?&]id=(\d+)/);
+  if (m) return esc(attUrl(Number(m[1])));
+  // Solo esquemas seguros; bloquea javascript:, data:, vbscript:, file:
+  if (/^(https?:|mailto:|\/|#|\.)/i.test(u)) return u;
+  return '#';
+}
+function mdToHtml(md) {
+  if (!md || !md.trim()) {
+    return `<p class="md-empty faint">Documento vacío. Pulsa <strong>Editar</strong> y escribe en Markdown:
+      <code># título</code>, <code>**negrita**</code>, listas con <code>-</code>, <code>[enlaces](url)</code>,
+      y pega o arrastra imágenes directamente.</p>`;
+  }
+  const inline = (s) => esc(s)
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, a, u) => `<img class="md-img" src="${mdSafeUrl(u, true)}" alt="${a}">`)
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) => `<a href="${mdSafeUrl(u)}" target="_blank" rel="noopener">${t}</a>`)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+  const lines = md.split('\n');
+  const out = [];
+  let inUl = false, inCode = false, code = [], para = [];
+  const flushPara = () => { if (para.length) { out.push('<p>' + para.join('<br>') + '</p>'); para = []; } };
+  const closeUl = () => { if (inUl) { out.push('</ul>'); inUl = false; } };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (line.trim().startsWith('```')) {
+      if (inCode) { out.push('<pre class="md-pre">' + esc(code.join('\n')) + '</pre>'); code = []; inCode = false; }
+      else { flushPara(); closeUl(); inCode = true; }
+      continue;
+    }
+    if (inCode) { code.push(raw); continue; }
+    if (!line.trim()) { flushPara(); closeUl(); continue; }
+    let m;
+    if ((m = line.match(/^(#{1,3})\s+(.*)$/))) {
+      flushPara(); closeUl();
+      out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`);
+    } else if (/^(-{3,}|\*{3,})$/.test(line.trim())) {
+      flushPara(); closeUl(); out.push('<hr>');
+    } else if ((m = line.match(/^\s*[-*]\s+\[([ xX])\]\s+(.*)$/))) {
+      flushPara();
+      if (!inUl) { out.push('<ul class="md-todo">'); inUl = true; }
+      out.push(`<li>${m[1].toLowerCase() === 'x' ? '☑' : '☐'} ${inline(m[2])}</li>`);
+    } else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
+      flushPara();
+      if (!inUl) { out.push('<ul>'); inUl = true; }
+      out.push(`<li>${inline(m[1])}</li>`);
+    } else if ((m = line.match(/^\s*>\s+(.*)$/))) {
+      flushPara(); closeUl(); out.push(`<blockquote>${inline(m[1])}</blockquote>`);
+    } else {
+      closeUl(); para.push(inline(line));
+    }
+  }
+  if (inCode) out.push('<pre class="md-pre">' + esc(code.join('\n')) + '</pre>');
+  flushPara(); closeUl();
+  return out.join('\n');
+}
+
+const docContent = (listId) => (S.docs && S.docs[String(listId)]) || '';
+let _docMode = 'view';   // 'view' | 'edit'
+let _docSaveTimer = null;
+
+function viewDocumento() {
+  if (route.type !== 'list') {
+    $('#main').innerHTML = emptyState('📄', 'El documento es por lista',
+      'Abre una lista para escribir su documento. Es tu página tipo Notion para notas, specs o bitácora.');
+    return;
+  }
+  const listId = route.listId;
+  const content = docContent(listId);
+  if (!content && _docMode === 'view') _docMode = 'edit'; // vacío → directo a editar
+  const editing = _docMode === 'edit' && !IS_GUEST;
+  const toggle = IS_GUEST ? '' : `<div class="doc-toggle">
+    <button class="doc-tab ${editing ? '' : 'on'}" onclick="docSetMode('view')">${I.file} Vista</button>
+    <button class="doc-tab ${editing ? 'on' : ''}" onclick="docSetMode('edit')">${I.edit} Editar</button>
+  </div>`;
+  let body;
+  if (editing) {
+    body = `<textarea id="doc-editor" class="doc-editor" placeholder="# Mi documento
+
+Escribe en Markdown. Pega (⌘V) o arrastra imágenes aquí." oninput="docOnInput(${listId})" onblur="docSave(${listId})">${esc(content)}</textarea>`;
+  } else {
+    body = `<div class="doc-render">${mdToHtml(content)}</div>`;
+  }
+  $('#main').innerHTML = `<div class="doc-wrap">
+    <div class="doc-head">
+      <div class="view-title" style="margin:0">📄 ${esc(listById(listId)?.name || 'Documento')}</div>
+      ${toggle}
+    </div>
+    ${body}
+  </div>`;
+  if (editing) {
+    const ed = $('#doc-editor');
+    wireDocPasteDrop(ed, listId);
+    ed.focus();
+  }
+}
+function docSetMode(m) { _docMode = m; renderMain(); }
+function docOnInput(listId) {
+  const ed = $('#doc-editor');
+  if (!ed) return;
+  S.docs = S.docs || {};
+  S.docs[String(listId)] = ed.value;            // optimista
+  clearTimeout(_docSaveTimer);
+  _docSaveTimer = setTimeout(() => docSave(listId), 700);
+}
+async function docSave(listId) {
+  const ed = $('#doc-editor');
+  const content = ed ? ed.value : docContent(listId);
+  clearTimeout(_docSaveTimer);
+  try {
+    await api('/api/doc', { action: 'save', list_id: listId, content });
+    S.docs = S.docs || {}; S.docs[String(listId)] = content;
+  } catch (e) {}
+}
+function docInsertAtCursor(ed, text) {
+  const s = ed.selectionStart, e = ed.selectionEnd;
+  ed.value = ed.value.slice(0, s) + text + ed.value.slice(e);
+  ed.selectionStart = ed.selectionEnd = s + text.length;
+}
+async function docUploadImage(listId, file, ed) {
+  if (!file.type.startsWith('image/')) { toast('Solo imágenes se incrustan; usa los adjuntos de la tarea para otros archivos', 'err'); return; }
+  try {
+    const dataUrl = await fileToDataURL(file);
+    const r = await api('/api/attachment', { action: 'upload', list_id: listId, name: file.name, mime: file.type, data: String(dataUrl) });
+    // URL sin token: el token del visor se añade al renderizar (mdSafeUrl). No persistir credenciales.
+    const md = `\n![${file.name}](/api/attachment?id=${r.id})\n`;
+    if (ed) { docInsertAtCursor(ed, md); docOnInput(listId); }
+    toast('Imagen insertada ✓');
+  } catch (e) {}
+}
+function wireDocPasteDrop(ed, listId) {
+  ed.addEventListener('paste', async (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    for (const it of items) {
+      if (it.kind === 'file') { const f = it.getAsFile(); if (f && f.type.startsWith('image/')) { e.preventDefault(); await docUploadImage(listId, f, ed); } }
+    }
+  });
+  ['dragover', 'dragenter'].forEach(ev => ed.addEventListener(ev, (e) => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); ed.classList.add('drag-over'); }
+  }));
+  ['dragleave', 'drop'].forEach(ev => ed.addEventListener(ev, () => ed.classList.remove('drag-over')));
+  ed.addEventListener('drop', async (e) => {
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) { e.preventDefault(); for (const f of files) await docUploadImage(listId, f, ed); }
+  });
 }
 
 /* ---------------------------------------------------------- vista: inicio */
@@ -1105,7 +1430,7 @@ async function addFolderRow() {
   await refresh();
 }
 async function removeFolder(id) {
-  if (!confirm('¿Dejar de vigilar esta carpeta? (no borra nada de tu disco)')) return;
+  if (!await uiConfirm({ title: '¿Dejar de vigilar esta carpeta?', message: 'No borra nada de tu disco, solo deja de mostrarla en Carmín.', okText: 'Dejar de vigilar', danger: true })) return;
   await api('/api/folder', { action: 'delete', id });
   MDdata = null;
   await refresh();
@@ -1113,6 +1438,334 @@ async function removeFolder(id) {
 
 function emptyState(icon, title, hint) {
   return `<div class="empty"><div class="big">${icon}</div><div style="font-weight:900">${title}</div><div class="hint">${hint || ''}</div></div>`;
+}
+
+/* ---------------------------------------------------------- adjuntos: imágenes y archivos */
+function attUrl(id, dl) {
+  const t = authToken();
+  return `/api/attachment?id=${id}${dl ? '&dl=1' : ''}${t ? '&token=' + encodeURIComponent(t) : ''}`;
+}
+function humanSize(n) {
+  if (!n) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+const _EXT_ICON = {
+  pdf: '📕', doc: '📘', docx: '📘', xls: '📗', xlsx: '📗', csv: '📗',
+  ppt: '📙', pptx: '📙', zip: '🗜', rar: '🗜', txt: '📄', md: '📝',
+  mp4: '🎬', mov: '🎬', mp3: '🎵', wav: '🎵', fig: '🎨', sketch: '🎨',
+  js: '📜', ts: '📜', py: '🐍', json: '⚙️', html: '🌐', css: '🎨',
+};
+function fileIcon(ext, isDir) {
+  if (isDir) return '📁';
+  return _EXT_ICON[(ext || '').toLowerCase()] || '📎';
+}
+const isImageMime = (m) => (m || '').startsWith('image/');
+
+function renderAttachmentsSection(t) {
+  if (IS_GUEST) {
+    const atts = attachmentsOf(t.id);
+    if (!atts.length) return '';
+  }
+  const atts = attachmentsOf(t.id);
+  const imgs = atts.filter(a => isImageMime(a.mime));
+  const files = atts.filter(a => !isImageMime(a.mime));
+  let body = '';
+  if (imgs.length) {
+    body += `<div class="att-grid">${imgs.map(a => `
+      <div class="att-img" title="${esc(a.name)}">
+        <img src="${attUrl(a.id)}" alt="${esc(a.name)}" loading="lazy" onclick="openLightbox(${a.id})">
+        ${IS_GUEST ? '' : `<button class="att-del" title="Quitar" onclick="event.stopPropagation();deleteAttachment(${a.id})">${I.x}</button>`}
+      </div>`).join('')}</div>`;
+  }
+  if (files.length) {
+    body += `<div class="att-files">${files.map(a => {
+      const local = a.kind === 'local';
+      const ext = (a.name.split('.').pop() || '').toLowerCase();
+      return `<div class="att-file ${local ? 'att-local' : ''}">
+        <span class="att-ic">${fileIcon(ext, a.mime === 'inode/directory')}</span>
+        <span class="att-name" title="${esc(a.name)}">${esc(a.name)}</span>
+        <span class="att-meta faint">${local ? 'en tu PC' : humanSize(a.size)}</span>
+        <span class="att-acts">
+          ${local
+            ? `<button class="att-open" title="Abrir en tu Mac" onclick="openLocalAtt(${a.id},false)">Abrir</button>
+               <button class="att-open" title="Mostrar en Finder" onclick="openLocalAtt(${a.id},true)">📂</button>`
+            : `<a class="att-open" href="${attUrl(a.id, true)}" title="Descargar">↓</a>`}
+          ${IS_GUEST ? '' : `<button class="icon-btn btn-danger" style="width:26px;height:26px" onclick="deleteAttachment(${a.id})">${I.x}</button>`}
+        </span>
+      </div>`;
+    }).join('')}</div>`;
+  }
+  if (!atts.length) body = `<div class="att-empty faint">Pega una imagen (⌘V), arrastra archivos aquí, o usa los botones.</div>`;
+  const tools = IS_GUEST ? '' : `<div class="att-tools">
+      <button class="btn btn-soft" onclick="triggerUpload(${t.id})">${I.plus} Subir archivo</button>
+      <button class="btn btn-soft" onclick="openFileBrowser(${t.id})">${I.folder} Elegir de mi PC</button>
+    </div>`;
+  return `<div class="tp-attach" data-task="${t.id}">
+    <div class="tp-section" style="margin-bottom:8px">Adjuntos (${atts.length})</div>
+    ${body}
+    ${tools}
+  </div>`;
+}
+
+function triggerUpload(taskId) {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.multiple = true;
+  inp.onchange = async () => {
+    for (const f of inp.files) await uploadFile(taskId, f);
+  };
+  inp.click();
+}
+
+function fileToDataURL(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+async function uploadFile(taskId, file) {
+  if (file.size > 25 * 1024 * 1024) { toast(`"${file.name}" supera 25 MB`, 'err'); return; }
+  try {
+    const dataUrl = await fileToDataURL(file);
+    await api('/api/attachment', {
+      action: 'upload', task_id: taskId, name: file.name,
+      mime: file.type || '', data: String(dataUrl),
+    });
+    toast('Adjunto agregado ✓');
+    await refresh();
+  } catch (e) { /* toast ya mostrado por api() */ }
+}
+async function deleteAttachment(id) {
+  await api('/api/attachment', { action: 'delete', id });
+  await refresh();
+}
+async function openLocalAtt(id, reveal) {
+  // El servidor resuelve la ruta por el id del adjunto; el cliente nunca maneja rutas del disco.
+  try {
+    await api('/api/open', { path_id: id, reveal: !!reveal });
+  } catch (e) {}
+}
+
+/* lightbox para imágenes */
+function openLightbox(id) {
+  const wrap = document.createElement('div');
+  wrap.className = 'lightbox';
+  wrap.onclick = () => wrap.remove();
+  wrap.innerHTML = `<img src="${attUrl(id)}"><button class="lb-close">${I.x}</button>`;
+  document.body.appendChild(wrap);
+}
+
+/* pegar / arrastrar sobre el panel de tarea */
+function wirePanelDropPaste(panel, taskId) {
+  panel.addEventListener('paste', async (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    let handled = false;
+    for (const it of items) {
+      if (it.kind === 'file') {
+        const f = it.getAsFile();
+        if (f) { handled = true; await uploadFile(taskId, f); }
+      }
+    }
+    if (handled) e.preventDefault();
+  });
+  ['dragenter', 'dragover'].forEach(ev => panel.addEventListener(ev, (e) => {
+    if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) {
+      e.preventDefault(); panel.classList.add('drag-over');
+    }
+  }));
+  ['dragleave', 'drop'].forEach(ev => panel.addEventListener(ev, (e) => {
+    if (ev === 'dragleave' && panel.contains(e.relatedTarget)) return;
+    panel.classList.remove('drag-over');
+  }));
+  panel.addEventListener('drop', async (e) => {
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) {
+      e.preventDefault();
+      for (const f of files) await uploadFile(taskId, f);
+    }
+  });
+}
+
+/* ---------------------------------------------------------- explorador de archivos local */
+let _fb = { taskId: null, data: null, loading: false };
+function openFileBrowser(taskId) {
+  _fb = { taskId, data: null, loading: true };
+  showModal(`
+    <h2>Elegir de mi PC</h2>
+    <div class="faint" style="font-size:13px;margin-bottom:var(--space-3)">
+      Navega tu disco y elige un archivo o carpeta para trabajar desde ahí. Carmín guarda una
+      <strong>referencia</strong> (no copia el archivo) y puede abrirlo en su app nativa.
+    </div>
+    <div id="fb-body">${mdSkeleton()}${mdSkeleton()}</div>
+    <div style="display:flex;justify-content:flex-end;margin-top:var(--space-3)">
+      <button class="btn btn-soft" onclick="closeModal()">Cerrar</button>
+    </div>`);
+  fbNav('');
+}
+async function fbNav(path) {
+  _fb.loading = true;
+  try {
+    const r = await fetch('/api/browse?path=' + encodeURIComponent(path || ''), { headers: withToken({}) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'error');
+    _fb.data = d;
+  } catch (e) {
+    const el = $('#fb-body');
+    if (el) el.innerHTML = emptyState('⚠️', 'No pude leer esa carpeta', esc(e.message || ''));
+    return;
+  }
+  renderFileBrowser();
+}
+function fbUp() { if (_fb.data && _fb.data.parent) fbNav(_fb.data.parent); }
+function renderFileBrowser() {
+  const el = $('#fb-body');
+  if (!el || !_fb.data) return;
+  const d = _fb.data;
+  const crumbs = (d.path || '').split('/').filter(Boolean);
+  const shortcuts = (d.shortcuts || []).map((s, i) =>
+    `<button class="fb-chip ${s.path === d.path ? 'on' : ''}" onclick="fbNav(_fb.data.shortcuts[${i}].path)">${esc(s.label)}</button>`).join('');
+  const rows = (d.entries || []).map((e, i) => `
+    <div class="fb-row" ondblclick="fbActivate(${i})">
+      <span class="fb-ic">${fileIcon(e.ext, e.is_dir)}</span>
+      <span class="fb-name" title="${esc(e.name)}">${esc(e.name)}</span>
+      <span class="fb-meta faint">${e.is_dir ? '' : humanSize(e.size)}</span>
+      ${e.is_dir
+        ? `<button class="fb-act" onclick="fbNav(_fb.data.entries[${i}].path)">Abrir ▸</button>
+           <button class="fb-pick" onclick="fbPick(${i})">Elegir carpeta</button>`
+        : `<button class="fb-pick" onclick="fbPick(${i})">Elegir</button>`}
+    </div>`).join('');
+  el.innerHTML = `
+    <div class="fb-shortcuts">${shortcuts}</div>
+    <div class="fb-pathbar">
+      <button class="fb-up" onclick="fbUp()" ${d.parent ? '' : 'disabled'} title="Subir un nivel">↑</button>
+      <span class="fb-path">/${crumbs.map(esc).join(' <span class="faint">/</span> ')}</span>
+    </div>
+    <div class="fb-list">${rows || '<div class="faint" style="padding:16px;text-align:center">Carpeta vacía</div>'}</div>`;
+}
+function fbActivate(i) {
+  const e = _fb.data.entries[i];
+  if (!e) return;
+  if (e.is_dir) fbNav(e.path); else fbPick(i);
+}
+async function fbPick(i) {
+  const e = _fb.data.entries[i];
+  if (!e) return;
+  await api('/api/attachment', { action: 'link_local', task_id: _fb.taskId, path: e.path });
+  closeModal();
+  toast('Archivo vinculado ✓');
+  await refresh();
+}
+
+/* ---------------------------------------------------------- relaciones entre tareas */
+const LINK_KINDS = {
+  relates: { label: 'Relacionada con', icon: '🔗', verb: 'relacionar con' },
+  blocks: { label: 'Bloquea a', icon: '⛔', verb: 'que bloquee a' },
+  blocked_by: { label: 'Bloqueada por', icon: '⏳', verb: '' },
+  duplicates: { label: 'Duplica a', icon: '⧉', verb: 'duplicar a' },
+};
+function relationsForTask(taskId) {
+  // Devuelve [{linkId, kind(display), otherId}] normalizando dirección.
+  const out = [];
+  for (const l of linksOf(taskId)) {
+    if (l.src_id === taskId) {
+      out.push({ linkId: l.id, kind: l.kind, otherId: l.dst_id });
+    } else {
+      // soy el destino → invierto el sentido para mostrar
+      const inv = l.kind === 'blocks' ? 'blocked_by' : l.kind;
+      out.push({ linkId: l.id, kind: inv, otherId: l.src_id });
+    }
+  }
+  return out;
+}
+function renderRelationsSection(t) {
+  const rels = relationsForTask(t.id);
+  if (IS_GUEST && !rels.length) return '';
+  const byKind = {};
+  rels.forEach(r => (byKind[r.kind] = byKind[r.kind] || []).push(r));
+  let body = '';
+  ['blocks', 'blocked_by', 'relates', 'duplicates'].forEach(k => {
+    const items = byKind[k];
+    if (!items || !items.length) return;
+    const meta = LINK_KINDS[k];
+    body += `<div class="rel-group">
+      <div class="rel-kind">${meta.icon} ${meta.label}</div>
+      ${items.map(r => {
+        const ot = taskById(r.otherId);
+        if (!ot) return '';
+        const st = statusById(ot.status_id);
+        return `<div class="rel-item" onclick="openTask(${ot.id})">
+          <span class="status-dot" style="color:${st.color}"></span>
+          <span class="rel-title ${isDone(ot) ? 'done' : ''}">${esc(ot.title)}</span>
+          ${IS_GUEST ? '' : `<button class="icon-btn btn-danger" style="width:24px;height:24px" onclick="event.stopPropagation();deleteLink(${r.linkId})">${I.x}</button>`}
+        </div>`;
+      }).join('')}
+    </div>`;
+  });
+  if (!rels.length) body = `<div class="faint" style="font-size:12.5px">Sin relaciones. Conecta esta tarea con otras: qué la bloquea, qué se relaciona.</div>`;
+  const addBtn = IS_GUEST ? '' : `<button class="btn btn-soft" style="margin-top:8px" onclick="openLinkModal(${t.id})">${I.plus} Vincular tarea</button>`;
+  return `<div class="tp-rel">
+    <div class="tp-section" style="margin-bottom:8px">Relaciones (${rels.length})</div>
+    ${body}
+    ${addBtn}
+  </div>`;
+}
+
+let _linkDraft = { taskId: null, kind: 'relates' };
+function openLinkModal(taskId) {
+  _linkDraft = { taskId, kind: 'relates' };
+  showModal(`
+    <h2>Vincular tarea</h2>
+    <div class="sec">
+      <h4>Tipo de relación</h4>
+      <div class="link-kinds">
+        ${['relates', 'blocks', 'duplicates'].map(k =>
+          `<button class="link-kind ${k === 'relates' ? 'on' : ''}" data-kind="${k}" onclick="lkPickKind('${k}')">${LINK_KINDS[k].icon} ${LINK_KINDS[k].label}</button>`).join('')}
+      </div>
+    </div>
+    <div class="sec">
+      <h4>¿Con cuál tarea?</h4>
+      <input type="text" id="lk-search" placeholder="Busca por título…" oninput="lkSearch(this.value)" autocomplete="off">
+      <div id="lk-results" class="lk-results"></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end"><button class="btn btn-soft" onclick="closeModal()">Cerrar</button></div>`);
+  setTimeout(() => { $('#lk-search')?.focus(); lkSearch(''); }, 60);
+}
+function lkPickKind(k) {
+  _linkDraft.kind = k;
+  document.querySelectorAll('.link-kind').forEach(el => el.classList.toggle('on', el.dataset.kind === k));
+}
+function lkSearch(q) {
+  const el = $('#lk-results');
+  if (!el) return;
+  const k = (q || '').toLowerCase().trim();
+  const existing = new Set(linksOf(_linkDraft.taskId).flatMap(l => [l.src_id, l.dst_id]));
+  let cands = S.tasks.filter(t => t.id !== _linkDraft.taskId && !existing.has(t.id));
+  if (k) cands = cands.filter(t => t.title.toLowerCase().includes(k));
+  cands = sortTasks(cands).slice(0, 8);
+  if (!cands.length) { el.innerHTML = `<div class="faint" style="padding:10px">Nada coincide.</div>`; return; }
+  el.innerHTML = cands.map(t => {
+    const st = statusById(t.status_id);
+    const l = listById(t.list_id);
+    return `<button class="lk-row" onclick="createLink(${t.id})">
+      <span class="status-dot" style="color:${st.color}"></span>
+      <span class="lk-row-title">${esc(t.title)}</span>
+      ${l ? `<span class="chip">${esc(l.name)}</span>` : ''}
+    </button>`;
+  }).join('');
+}
+async function createLink(otherId) {
+  await api('/api/link', { action: 'create', src_id: _linkDraft.taskId, dst_id: otherId, kind: _linkDraft.kind });
+  closeModal();
+  toast('Tareas vinculadas ✓');
+  await refresh();
+}
+async function deleteLink(id) {
+  await api('/api/link', { action: 'delete', id });
+  await refresh();
 }
 
 /* ---------------------------------------------------------- panel de tarea */
@@ -1165,6 +1818,8 @@ function renderPanel() {
           <div class="tp-section" style="margin-bottom:8px">Descripción</div>
           <textarea class="tp-descr" placeholder="Escribe los detalles…" onblur="saveField(${t.id},'descr',this.value)">${esc(t.descr || '')}</textarea>
         </div>
+        ${renderAttachmentsSection(t)}
+        ${renderRelationsSection(t)}
         <div>
           <div class="tp-section" style="margin-bottom:8px">Comentarios y sugerencias (${comments.length})</div>
           ${comments.map(c => `
@@ -1187,6 +1842,11 @@ function renderPanel() {
   if (!wasOpen) { void layer.offsetHeight; layer.classList.add('open'); } // scrim fade-in solo al abrir
   const ta = layer.querySelector('.tp-title');
   ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px';
+  // Pegar (⌘V) y arrastrar archivos sobre el panel → subir adjunto.
+  if (!IS_GUEST) {
+    const panel = layer.querySelector('.task-panel');
+    if (panel) wirePanelDropPaste(panel, t.id);
+  }
 }
 
 async function saveField(id, field, value) {
@@ -1225,7 +1885,7 @@ async function saveCustomValue(taskId, fieldId, value) {
   await refresh();
 }
 async function deleteTask(id) {
-  if (!confirm('¿Eliminar esta tarea?')) return;
+  if (!await uiConfirm({ title: '¿Eliminar esta tarea?', message: 'Se borrará junto con sus comentarios y adjuntos.', okText: 'Eliminar', danger: true })) return;
   await api('/api/task', { action: 'delete', id });
   closeTask();
   toast('Tarea eliminada');
@@ -1302,9 +1962,11 @@ function openSpacePanel(spaceId) {
 
 /* ---------------------------------------------------------- crear / editar estructuras */
 async function addSpacePrompt() {
-  const name = prompt('Nombre del nuevo espacio:');
+  const name = await uiPrompt({ title: 'Nuevo espacio', label: 'Nombre', placeholder: 'Ej: Akatrek, Mi Setup…', okText: 'Crear espacio' });
   if (!name || !name.trim()) return;
-  const icon = prompt('Un emoji para el espacio (opcional):', '📁') || '📁';
+  const iconRaw = await uiPrompt({ title: 'Icono del espacio', label: 'Un emoji (opcional)', value: '📁', maxlength: 4 });
+  if (iconRaw === null) return; // canceló
+  const icon = (iconRaw && iconRaw.trim()) || '📁';
   const r = await api('/api/space', { action: 'create', name: name.trim(), icon: icon.trim() });
   await api('/api/list', { action: 'create', space_id: r.id, name: 'General' });
   const s = expandedSet(); s.add(r.id);
@@ -1315,7 +1977,7 @@ async function addSpacePrompt() {
 async function renameSpace(id) {
   closePopovers();
   const sp = S.spaces.find(s => s.id === id);
-  const name = prompt('Nuevo nombre:', sp ? sp.name : '');
+  const name = await uiPrompt({ title: 'Renombrar espacio', label: 'Nuevo nombre', value: sp ? sp.name : '', okText: 'Guardar' });
   if (!name || !name.trim()) return;
   await api('/api/space', { action: 'update', id, name: name.trim() });
   await refresh();
@@ -1323,13 +1985,13 @@ async function renameSpace(id) {
 async function deleteSpace(id) {
   closePopovers();
   const n = S.tasks.filter(t => { const sp = spaceOfList(t.list_id); return sp && sp.id === id; }).length;
-  if (!confirm(`¿Eliminar este espacio${n ? ' y sus ' + n + ' tareas' : ''}? Esto no se puede deshacer.`)) return;
+  if (!await uiConfirm({ title: '¿Eliminar este espacio?', message: `Se borrará${n ? ' junto con sus ' + n + ' tareas' : ''}. Esto no se puede deshacer.`, okText: 'Eliminar', danger: true })) return;
   await api('/api/space', { action: 'delete', id });
   if (route.type === 'list' && !listById(route.listId)) route = { type: 'inicio', listId: null, tab: 'lista' };
   await refresh();
 }
 async function addListPrompt(spaceId) {
-  const name = prompt('Nombre de la nueva lista:');
+  const name = await uiPrompt({ title: 'Nueva lista', label: 'Nombre', placeholder: 'Ej: Trips activos, Contactos…', okText: 'Crear lista' });
   if (!name || !name.trim()) return;
   await api('/api/list', { action: 'create', space_id: spaceId, name: name.trim() });
   toast('Lista creada ✓');
@@ -1342,16 +2004,18 @@ function newTaskModal() {
   for (const sp of S.spaces) for (const l of sp.lists) lists.push({ ...l, space: sp.name });
   if (!lists.length) { toast('Primero crea un espacio con una lista', 'err'); return; }
   const sel = route.type === 'list' ? route.listId : lists[0].id;
+  const selList = lists.find(l => l.id === sel);
+  const noun = selList ? itemNoun(selList) : 'tarea';
   showModal(`
-    <h2>Nueva tarea</h2>
-    <div class="sec"><input type="text" id="nt-title" placeholder="¿Qué hay que hacer?" onkeydown="if(event.key==='Enter')createFromModal()"></div>
+    <h2>Crear ${esc(noun)}</h2>
+    <div class="sec"><input type="text" id="nt-title" placeholder="${noun === 'tarea' ? '¿Qué hay que hacer?' : 'Nombre del ' + esc(noun)}" onkeydown="if(event.key==='Enter')createFromModal()"></div>
     <div class="sec"><h4>Lista</h4>
-      <select id="nt-list" style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px">
-        ${lists.map(l => `<option value="${l.id}" ${l.id === sel ? 'selected' : ''}>${esc(l.space)} / ${esc(l.name)}</option>`).join('')}
+      <select id="nt-list" onchange="document.querySelector('.modal h2').textContent='Crear '+(this.options[this.selectedIndex].dataset.noun||'tarea')" style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:10px">
+        ${lists.map(l => `<option value="${l.id}" data-noun="${esc(itemNoun(l))}" ${l.id === sel ? 'selected' : ''}>${esc(l.space)} / ${l.icon ? esc(l.icon) + ' ' : ''}${esc(l.name)}</option>`).join('')}
       </select></div>
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button class="btn btn-soft" onclick="closeModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="createFromModal()">${I.plus} Crear tarea</button>
+      <button class="btn btn-primary" onclick="createFromModal()">${I.plus} Crear</button>
     </div>`);
   setTimeout(() => { const e = $('#nt-title'); if (e) e.focus(); }, 60);
 }
@@ -1366,12 +2030,12 @@ function openAddViewMenu(ev) {
     { id: 'calendario', name: 'Calendario', icon: I.cal, desc: 'Mes con tareas por fecha' },
     { id: 'tabla', name: 'Tabla', icon: I.all, desc: 'Spreadsheet con columnas custom' },
     { id: 'panel', name: 'Panel', icon: I.chart, desc: 'Metas del proyecto con progreso' },
+    { id: 'grafo', name: 'Grafo', icon: I.graph, desc: 'Red de tareas conectadas por relaciones' },
+    { id: 'documento', name: 'Documento', icon: I.file, desc: 'Página Markdown por lista, con imágenes' },
   ];
   const soon = [
     { id: 'gantt', name: 'Gantt', emoji: '📊', desc: 'Línea de tiempo con dependencias' },
-    { id: 'documento', name: 'Documento', emoji: '📄', desc: 'Página tipo Notion para notas' },
     { id: 'cronograma', name: 'Cronograma', emoji: '🗓', desc: 'Timeline horizontal por fechas' },
-    { id: 'mapa', name: 'Mapa mental', emoji: '🧠', desc: 'Whiteboard con ideas conectadas' },
     { id: 'formulario', name: 'Formulario', emoji: '📝', desc: 'Capturar tareas vía formulario' },
   ];
   const renderItem = (v) => {
@@ -1412,7 +2076,7 @@ async function toggleViewInline(v) {
     views.push(v);
     toast('Vista agregada ✓');
   }
-  const order = ['lista', 'tablero', 'calendario', 'tabla', 'panel'];
+  const order = ['lista', 'tablero', 'calendario', 'tabla', 'panel', 'grafo', 'documento'];
   views.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   S.settings.views = JSON.stringify(views);
   await api('/api/setting', { key: 'views', value: S.settings.views });
@@ -1636,6 +2300,71 @@ async function createFromModal() {
   openTask(r.id);
 }
 
+/* ---------------------------------------------------------- diálogos propios (reemplazan prompt/confirm del navegador) */
+// Capa independiente que se apila sobre cualquier modal (p.ej. Ajustes) sin reemplazarlo.
+function _dialog(innerHtml, setup) {
+  const wrap = document.createElement('div');
+  wrap.className = 'ui-dialog-layer';
+  wrap.innerHTML = `<div class="scrim"></div><div class="modal ui-dialog">${innerHtml}</div>`;
+  document.body.appendChild(wrap);
+  void wrap.offsetHeight;
+  wrap.classList.add('open');
+  setup(wrap, (cb) => { wrap.classList.remove('open'); setTimeout(() => { wrap.remove(); cb && cb(); }, 200); });
+  return wrap;
+}
+function uiConfirm(opts) {
+  opts = opts || {};
+  return new Promise((res) => {
+    _dialog(`
+      <h2>${esc(opts.title || '¿Confirmar?')}</h2>
+      ${opts.message ? `<p class="ui-dialog-msg">${esc(opts.message)}</p>` : ''}
+      <div class="ui-dialog-actions">
+        <button class="btn btn-soft" data-act="cancel">${esc(opts.cancelText || 'Cancelar')}</button>
+        <button class="btn ${opts.danger ? 'btn-danger' : 'btn-primary'}" data-act="ok">${esc(opts.okText || 'Aceptar')}</button>
+      </div>`, (w, close) => {
+      w._uiClose = () => close(() => res(false));
+      w.querySelector('[data-act=ok]').onclick = () => close(() => res(true));
+      w.querySelector('[data-act=cancel]').onclick = w._uiClose;
+      w.querySelector('.scrim').onclick = w._uiClose;
+      setTimeout(() => w.querySelector('[data-act=ok]').focus(), 50);
+    });
+  });
+}
+function uiPrompt(opts) {
+  opts = opts || {};
+  return new Promise((res) => {
+    _dialog(`
+      <h2>${esc(opts.title || '')}</h2>
+      <div class="sec">${opts.label ? `<h4>${esc(opts.label)}</h4>` : ''}
+        <input type="text" data-el="input" value="${esc(opts.value || '')}" placeholder="${esc(opts.placeholder || '')}" maxlength="${opts.maxlength || 200}"></div>
+      <div class="ui-dialog-actions">
+        <button class="btn btn-soft" data-act="cancel">Cancelar</button>
+        <button class="btn btn-primary" data-act="ok">${esc(opts.okText || 'Aceptar')}</button>
+      </div>`, (w, close) => {
+      const inp = w.querySelector('[data-el=input]');
+      const submit = () => close(() => res(inp.value));
+      const cancel = () => close(() => res(null));
+      w._uiClose = cancel;
+      w.querySelector('[data-act=ok]').onclick = submit;
+      w.querySelector('[data-act=cancel]').onclick = cancel;
+      w.querySelector('.scrim').onclick = cancel;
+      inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } };
+      setTimeout(() => { inp.focus(); inp.select(); }, 50);
+    });
+  });
+}
+function _topDialog() { const ds = document.querySelectorAll('.ui-dialog-layer'); return ds.length ? ds[ds.length - 1] : null; }
+
+/* ---------------------------------------------------------- sidebar colapsable */
+function applySidebar() {
+  document.body.classList.toggle('sidebar-collapsed', localStorage.getItem('carmin_sidebar') === '1');
+}
+function toggleSidebar() {
+  const c = localStorage.getItem('carmin_sidebar') === '1';
+  localStorage.setItem('carmin_sidebar', c ? '0' : '1');
+  applySidebar();
+}
+
 /* ---------------------------------------------------------- modal genérico + ajustes */
 function showModal(inner) {
   const layer = $('#modal-layer');
@@ -1653,13 +2382,17 @@ function closeModal() {
   setTimeout(() => { if (!layer.classList.contains('open')) layer.innerHTML = ''; }, 200);
 }
 
-/* ---------------------------------------------------------- editor de columnas custom */
-let _cfDraft = null; // borrador en memoria mientras el modal está abierto
+/* ---------------------------------------------------------- editor: configurar lista (tipo + columnas) */
+let _cfDraft = null;          // borrador de columnas en memoria
+let _cfListId = null;         // lista que se está editando
+let _cfMeta = { icon: '', item_noun: '' }; // tipo de ítem e icono
 
 function openCustomFieldsEditor(listId) {
   const l = listById(listId);
   if (!l) { toast('Esa lista ya no existe', 'err'); return; }
+  _cfListId = listId;
   _cfDraft = JSON.parse(JSON.stringify(l.custom_fields || []));
+  _cfMeta = { icon: l.icon || '', item_noun: l.item_noun || '' };
   renderCustomFieldsEditor(l);
 }
 
@@ -1686,19 +2419,32 @@ function renderCustomFieldsEditor(l) {
       ${f.type === 'dropdown' ? cfDropdownOptions(f, i) : ''}
     </div>`).join('');
   showModal(`
-    <h2>Columnas personalizadas — ${esc(l.name)}</h2>
+    <h2>Configurar lista — ${esc(l.name)}</h2>
     <div class="faint" style="font-size:13px;margin-bottom:var(--space-4)">
-      Añade campos propios de esta lista: presupuesto, esfuerzo, enlace al PR, etc. Aparecen en la vista <strong>Tabla</strong> y en el panel de la tarea.
+      Convierte esta lista en un <strong>tipo</strong>: no solo tareas, sino contactos, viajes, gastos…
+      El “ítem” define cómo se nombra cada fila; las columnas son su esquema (aparecen en la vista <strong>Tabla</strong> y en el panel).
     </div>
-    <div class="sec" id="cf-rows">${rows || '<div class="faint" style="padding:12px 0">Sin columnas. Añade la primera ↓</div>'}</div>
+    <div class="sec" style="display:grid;grid-template-columns:90px 1fr;gap:12px">
+      <div><h4>Icono</h4>
+        <input type="text" id="cf-meta-icon" value="${esc(_cfMeta.icon)}" placeholder="📁" maxlength="4"
+          oninput="_cfMeta.icon=this.value" style="text-align:center;font-size:18px">
+      </div>
+      <div><h4>Cada ítem es un…</h4>
+        <input type="text" id="cf-meta-noun" value="${esc(_cfMeta.item_noun)}" placeholder="tarea (por defecto)"
+          oninput="_cfMeta.item_noun=this.value">
+      </div>
+    </div>
+    <div class="sec"><h4>Columnas (esquema del tipo)</h4>
+      <div id="cf-rows">${rows || '<div class="faint" style="padding:12px 0">Sin columnas. Añade la primera ↓</div>'}</div>
+    </div>
     <div class="sec">
       <button class="btn btn-ghost" onclick="cfDraftAdd()">${I.plus} Añadir columna</button>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-      <span class="faint" style="font-size:12px">Los valores que ya hayas escrito en tareas se conservan.</span>
+      <span class="faint" style="font-size:12px">Los valores que ya hayas escrito se conservan.</span>
       <div style="display:flex;gap:10px">
         <button class="btn btn-soft" onclick="closeModal();_cfDraft=null">Cancelar</button>
-        <button class="btn btn-primary" onclick="cfDraftSave(${l.id})">Guardar columnas</button>
+        <button class="btn btn-primary" onclick="cfDraftSave(${l.id})">Guardar</button>
       </div>
     </div>`);
 }
@@ -1750,11 +2496,11 @@ function cfDraftOpt(fi, oi, key, val) {
   // No re-render para no perder el foco del input siguiente
 }
 function refreshCfEditor() {
-  // Re-render manteniendo el modal abierto. Encuentro la lista actual por el título.
-  const m = document.querySelector('.modal h2');
-  if (!m) return;
-  const name = m.textContent.replace('Columnas personalizadas — ', '').trim();
-  const l = S.spaces.flatMap(sp => sp.lists).find(x => x.name === name);
+  // Re-render manteniendo el modal abierto, sin perder el icono/sustantivo en edición.
+  const ic = $('#cf-meta-icon'), nn = $('#cf-meta-noun');
+  if (ic) _cfMeta.icon = ic.value;
+  if (nn) _cfMeta.item_noun = nn.value;
+  const l = listById(_cfListId);
   if (l) renderCustomFieldsEditor(l);
 }
 async function cfDraftSave(listId) {
@@ -1762,11 +2508,16 @@ async function cfDraftSave(listId) {
   for (const f of _cfDraft) {
     if (!String(f.name || '').trim()) { toast('Cada columna necesita un nombre', 'err'); return; }
   }
+  // Lee los valores actuales por si no se disparó el onblur antes de guardar.
+  const ic = $('#cf-meta-icon'), nn = $('#cf-meta-noun');
+  const icon = ic ? ic.value : _cfMeta.icon;
+  const item_noun = nn ? nn.value : _cfMeta.item_noun;
   try {
+    await api('/api/list', { action: 'update', id: listId, icon, item_noun });
     await api('/api/list', { action: 'set_fields', id: listId, custom_fields: _cfDraft });
     _cfDraft = null;
     closeModal();
-    toast('Columnas guardadas ✓');
+    toast('Lista configurada ✓');
     await refresh();
   } catch (e) {}
 }
@@ -1845,7 +2596,7 @@ async function toggleView(v, el) {
     views = views.filter(x => x !== v);
     if (!views.length) { views = [v]; el.checked = true; toast('Debe quedar al menos una vista', 'err'); }
   }
-  const order = ['lista', 'tablero', 'calendario', 'tabla', 'panel'];
+  const order = ['lista', 'tablero', 'calendario', 'tabla', 'panel', 'grafo', 'documento'];
   views.sort((a, b) => order.indexOf(a) - order.indexOf(b));
   S.settings.views = JSON.stringify(views);
   await api('/api/setting', { key: 'views', value: S.settings.views });
@@ -1875,7 +2626,7 @@ async function moveStatus(id, dir) {
 }
 async function deleteStatus(id) {
   const n = S.tasks.filter(t => t.status_id === id).length;
-  if (!confirm(`¿Eliminar este estado?${n ? ' Sus ' + n + ' tareas pasarán al primer estado.' : ''}`)) return;
+  if (!await uiConfirm({ title: '¿Eliminar este estado?', message: n ? `Sus ${n} tareas pasarán al primer estado.` : '', okText: 'Eliminar', danger: true })) return;
   try { await api('/api/status', { action: 'delete', id }); } catch (e) { return; }
   await loadState();
   renderMain();
@@ -1886,7 +2637,7 @@ async function deleteStatus(id) {
   }
 }
 async function addStatus() {
-  const name = prompt('Nombre del nuevo estado:');
+  const name = await uiPrompt({ title: 'Nuevo estado', label: 'Nombre del estado', placeholder: 'Ej: BLOQUEADO', okText: 'Crear estado' });
   if (!name || !name.trim()) return;
   await api('/api/status', { action: 'create', name: name.trim(), color: '#8B97A6', kind: 'open' });
   await loadState();
@@ -1909,6 +2660,8 @@ async function removeFolderSettings(id) {
 /* ---------------------------------------------------------- arranque */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    const dlg = _topDialog();
+    if (dlg && dlg._uiClose) return dlg._uiClose();   // diálogos propios primero
     if (document.querySelector('.popover')) return closePopovers();
     if ($('#modal-layer').classList.contains('open')) return closeModal();
     if (openTaskId) return closeTask();
@@ -1920,6 +2673,7 @@ window.addEventListener('focus', () => {
   if (!typing && S) refresh();
 });
 
+applySidebar();
 loadState().then(() => {
   const exp = expandedSet();
   if (!localStorage.getItem(expKey)) {
