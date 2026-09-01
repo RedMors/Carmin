@@ -6,7 +6,7 @@ Carmín corre 100% en tu computadora. Tus tareas nunca salen de tu disco.
 Además de gestionar tareas, **vigila las carpetas de tus proyectos** y te muestra
 qué archivos `.md` se actualizaron y qué pendientes (`- [ ]`) siguen sin hacer.
 
-> 🇬🇧 *Carmín is a local-first, zero-dependency ClickUp-style project manager.
+> *Carmín is a local-first, zero-dependency ClickUp-style project manager.
 > It also watches your projects' markdown files to surface recent changes and
 > unchecked todos. Spanish-first UI; English translation welcome!*
 
